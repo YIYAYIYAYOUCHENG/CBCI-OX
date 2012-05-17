@@ -10,3 +10,6 @@ requirements:
 	CONFIG_SMP disabled
 	CONFIG_FAIR_GROUP_SCHED and CONFIG_RT_GROUP_SCHED set
 
+2012-5-17 afternnon - v2 :
+requirements:
+	CONFIG_SMP disabled

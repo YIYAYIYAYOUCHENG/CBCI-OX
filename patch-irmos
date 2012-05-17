@@ -1,6 +1,6 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ b/kernel/sched/irmos.c	2012-05-17 11:46:39.735775112 +0200
-@@ -0,0 +1,1187 @@
++++ b/kernel/sched/irmos.c	2012-05-17 15:48:06.563611425 +0200
+@@ -0,0 +1,1194 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
@@ -291,8 +291,15 @@
 +
 +int is_irmos_task(struct task_struct *p)
 +{
-+	struct rq *rq = p->se.cfs_rq->rq;
++	struct rq *rq; // = p->se.cfs_rq->rq;
 +	struct irmos_rq *irmos_rq;
++#ifdef CONFIG_FAIR_GROUP_SCHED
++	rq = p->se.cfs_rq->rq;
++#elif CONFIG_RT_GROUP_SCHED
++	rq = p->rt.rt_rq->rq;
++#else
++	return 0;
++#endif
 +	if( rq->is_irmos == 1)
 +	{	
 +		return 1;
