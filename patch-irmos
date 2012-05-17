@@ -1,0 +1,1190 @@
+--- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
++++ b/kernel/sched/irmos.c	2012-05-17 11:46:39.735775112 +0200
+@@ -0,0 +1,1187 @@
++#include "sched.h"
++#include <linux/ktime.h>
++#include <linux/slab.h>
++
++
++//extern struct task_group *task_group(struct task_struct *p);
++//static int index = 0;
++struct rt_bandwidth def_irmos_bandwidth;
++
++static enum hrtimer_restart
++sched_irmos_period_timer(struct hrtimer *hrtimer);
++
++void init_rq_irmos(struct rq *rq, struct rq *per_cpu)
++{
++        raw_spin_lock_init(&rq->lock);
++        rq->nr_running = 0;
++        rq->calc_load_active = 0;
++        rq->rt.rt_runtime = def_rt_bandwidth.rt_runtime;
++	rq->is_irmos = 1;
++        init_cfs_rq(&rq->cfs);
++        init_rt_rq(&rq->rt, rq);
++        atomic_set(&rq->nr_iowait, 0);
++	
++#ifdef CONFIG_FAIR_GROUP_SCHED
++	INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
++#endif
++#ifdef CONFIG_RT_GROUP_SCHED
++	INIT_LIST_HEAD(&rq->leaf_rt_rq_list);
++#endif
++}
++
++static void init_irmos_rq(struct irmos_rq *irmos_rq, struct rq *rq)
++{
++	struct irmos_prio_array *array;
++	int i;
++
++	array = &irmos_rq->active;
++	for( i = 0; i < MAX_PRIO; i++) {
++                array->task_prio[i] = 0;
++                __clear_bit(i, array->bitmap);
++        }
++
++        __set_bit(MAX_PRIO, array->bitmap);
++
++        irmos_rq->highest_prio = MAX_PRIO;
++
++	irmos_rq->irmos_time = 0;
++        irmos_rq->irmos_throttled = 0;
++        irmos_rq->irmos_deadline = 0;
++        irmos_rq->irmos_runtime = 0; 
++        irmos_rq->irmos_period = def_irmos_bandwidth.rt_period;
++	irmos_rq->irmos_start_time = 0;
++
++        raw_spin_lock_init(&irmos_rq->irmos_runtime_lock);
++
++        hrtimer_init(&irmos_rq->irmos_period_timer, CLOCK_MONOTONIC,
++							HRTIMER_MODE_REL);
++        irmos_rq->irmos_period_timer.function = sched_irmos_period_timer;
++
++	irmos_rq->irmos_nr_boosted = 0;
++        irmos_rq->rq = rq;
++        init_rq_irmos(&irmos_rq->rq_, rq);
++        irmos_rq->irmos_needs_resync = false;
++	RB_CLEAR_NODE(&irmos_rq->rb_node);
++}
++
++void init_irmos_edf_tree(struct irmos_edf_tree *tree) {
++	tree->rb_root = RB_ROOT;
++	tree->rb_leftmost = NULL;
++}
++
++struct irmos_rq *create_irmos_rq(struct rq *rq)
++{
++	struct irmos_rq *irmos_rq;
++	
++	irmos_rq = kzalloc(sizeof(struct irmos_rq), GFP_KERNEL);
++	init_irmos_rq(irmos_rq, rq);
++
++	return irmos_rq;
++}
++
++struct hyper_irmos_rq * create_hyper_irmos_rq(cpumask_var_t cpus_allowed)
++{
++	int i;
++	struct irmos_rq *irmos_rq;
++	struct hyper_irmos_rq *hir = kzalloc(sizeof(struct hyper_irmos_rq), 
++								GFP_KERNEL);
++	if( !hir)
++		goto hir_creation_err;
++	
++	if(!alloc_cpumask_var(&hir->cpus_allowed, GFP_KERNEL))
++		goto hir_creation_err;
++
++	hir->irmos_rq = kzalloc(sizeof(irmos_rq) * nr_cpu_ids, GFP_KERNEL);
++	if( !hir->irmos_rq)
++		goto hir_creation_err;
++
++	cpumask_copy(hir->cpus_allowed, cpus_allowed);
++	for_each_cpu(i, cpus_allowed) 
++		hir->irmos_rq[i] = create_irmos_rq(cpu_rq(i));
++	
++	return hir;
++hir_creation_err:
++	return NULL;
++}
++	
++struct hyper_irmos_rq* 
++create_empty_hyper_irmos_rq(cpumask_var_t cpus_allowed)
++{
++	int i;
++        struct irmos_rq *irmos_rq;
++        struct hyper_irmos_rq *hir = kzalloc(sizeof(struct hyper_irmos_rq),
++                                                                GFP_KERNEL);
++        if( !hir)
++                goto empty_hir_creation_err;
++
++        if(!alloc_cpumask_var(&hir->cpus_allowed, GFP_KERNEL))
++                goto empty_hir_creation_err;
++
++        hir->irmos_rq = kzalloc(sizeof(irmos_rq) * nr_cpu_ids, GFP_KERNEL);
++        if( !hir->irmos_rq)
++                goto empty_hir_creation_err;
++
++        cpumask_copy(hir->cpus_allowed, cpus_allowed);
++        for_each_cpu(i, cpus_allowed)
++                hir->irmos_rq[i] = NULL;
++
++	return hir;
++empty_hir_creation_err:
++	return NULL;
++}
++
++int attach_irmos_rq_to_hir(struct hyper_irmos_rq *hir, struct irmos_rq *ir)
++{
++	int cpu;
++#ifdef CONFIG_SMP
++	cpu = ir->rq->cpu;
++#else
++	cpu = 0;
++#endif
++	cpumask_set_cpu(cpu, hir->cpus_allowed);
++	hir->irmos_rq[cpu] = ir;
++
++	return 1;
++}
++
++static void start_irmos_period_timer(struct irmos_rq *irmos_rq);
++void init_irmos_bandwidth(struct rt_bandwidth *rt_b, u64 period, u64 runtime)
++{
++	rt_b->rt_period = ns_to_ktime(period);
++        rt_b->rt_runtime = runtime;
++
++        raw_spin_lock_init(&rt_b->rt_runtime_lock);
++}
++
++void set_irmos_rq_bandwidth(struct irmos_rq *irmos_rq, u64 period, u64 runtime)
++{
++	raw_spin_lock(irmos_rq->irmos_runtime_lock);
++
++	irmos_rq->irmos_period = ns_to_ktime(period);
++        irmos_rq->irmos_runtime = runtime;
++	irmos_rq->irmos_bw = to_ratio(period, runtime);
++
++        raw_spin_unlock(irmos_rq->irmos_runtime_lock);
++}
++
++#ifdef CONFIG_FAIR_GROUP_SCHED
++static void init_tg_cfs_entry_irmos(struct task_group *tg, 
++				struct cfs_rq *cfs_rq,
++				struct sched_entity *se, int cpu,
++				struct sched_entity *parent,
++				struct irmos_rq *irmos_rq)
++{
++	init_tg_cfs_entry(tg, cfs_rq, se, cpu, parent);
++	cfs_rq->rq = &irmos_rq->rq_;
++	tg->cfs_rq[cpu]->rq = &irmos_rq->rq_;
++	if( !parent && se)
++		se->cfs_rq = &irmos_rq->rq_.cfs;
++}
++#endif
++
++#ifdef CONFIG_RT_GROUP_SCHED
++static void init_tg_rt_entry_irmos(struct task_group *tg, 
++				struct rt_rq *rt_rq,
++				struct sched_rt_entity *rt_se, int cpu,
++				struct sched_rt_entity *parent,
++				struct irmos_rq *irmos_rq)
++{
++	init_tg_rt_entry(tg, rt_rq, rt_se, cpu, parent);
++	rt_rq->rq = &irmos_rq->rq_;
++	tg->rt_rq[cpu]->rq = &irmos_rq->rq_;
++	if( !parent && rt_se)
++		rt_se->rt_rq = &irmos_rq->rq_.rt;
++}
++#endif
++
++static void redirect_rq(struct task_struct *tsk, struct cgroup_scanner *scan)
++{
++	int *cpu = scan->data;
++#ifdef CONFIG_SMP
++	if( task_thread_info(tsk)->cpu != *cpu)
++		return;
++#endif
++	set_task_rq(tsk, *cpu); 
++}
++
++void attach_task_group_to_hyper_irmos_rq(struct hyper_irmos_rq *hir,
++						struct task_group *tg)
++{
++	int i;
++	struct task_group *child, *parent;
++	struct cgroup_scanner scan;
++/* 
++ * Temporarily, we consider a hyper irmos_rq reserve the same cpu bandwidth
++ * in all cpus in the system.
++ */
++	tg->parent = NULL;
++	for_each_possible_cpu(i) {
++#ifdef CONFIG_FAIR_GROUP_SCHED
++		hir->irmos_rq[i]->rq_.cfs.tg = tg;
++		hir->irmos_rq[i]->rq_.cfs.rq = &hir->irmos_rq[i]->rq_;
++		tg->cfs_rq[i] = &hir->irmos_rq[i]->rq_.cfs;	
++		tg->se[i] = NULL;
++#endif
++#ifdef CONFIG_RT_GROUP_SCHED
++		hir->irmos_rq[i]->rq_.rt.highest_prio.curr = MAX_RT_PRIO;
++		hir->irmos_rq[i]->rq_.rt.rt_nr_boosted = 0;
++		hir->irmos_rq[i]->rq_.rt.rq = &hir->irmos_rq[i]->rq_;
++		hir->irmos_rq[i]->rq_.rt.tg = tg;
++
++		tg->rt_rq[i] = &hir->irmos_rq[i]->rq_.rt;
++		tg->rt_se[i] = NULL;
++#endif
++		
++		scan.cg = tg->css.cgroup;
++		scan.test_task = NULL;
++		scan.process_task = redirect_rq;
++		scan.heap = NULL;
++		scan.data = &i;
++
++		//cgroup_scan_tasks(&scan);
++		
++		parent = tg;
++step1:
++		list_for_each_entry_rcu(child, &parent->children, siblings) {
++
++#ifdef CONFIG_FAIR_GROUP_SCHED
++			init_tg_cfs_entry_irmos(child, child->cfs_rq[i],
++					child->se[i], i, child->parent->se[i],
++					hir->irmos_rq[i]);
++#endif
++
++#ifdef CONFIG_RT_GROUP_SCHED
++			init_tg_rt_entry_irmos(child, child->rt_rq[i],
++					child->rt_se[i], i, 
++					child->parent->rt_se[i],
++					hir->irmos_rq[i]);
++#endif
++			scan.cg = tg->css.cgroup;
++			cgroup_scan_tasks(&scan);
++			parent = child;
++			goto step1;
++step2:		
++			continue;
++		}
++
++		if( parent == tg)
++			goto step3;
++	
++		child = parent;
++		parent = parent->parent;
++		goto step2;
++step3:
++		continue;
++	}
++
++}
++
++/* Attach all tasks (cfs, rt or even dl) to a hyper_irmos_rq */
++void attach_cgroup_to_hyper_irmos_rq(struct hyper_irmos_rq *hir, 
++							struct cgroup *cgrp)
++{
++	struct task_group *tg = 
++		container_of(cgroup_subsys_state(cgrp, cpu_cgroup_subsys_id),
++							struct task_group, css);
++	attach_task_group_to_hyper_irmos_rq(hir, tg);
++}
++
++int is_irmos_task(struct task_struct *p)
++{
++	struct rq *rq = p->se.cfs_rq->rq;
++	struct irmos_rq *irmos_rq;
++	if( rq->is_irmos == 1)
++	{	
++		return 1;
++	}
++	else {
++		return 0;
++	}	
++}
++
++struct irmos_rq*
++irmos_rq_of_task(struct task_struct *p)
++{
++	struct task_group *tg;
++	unsigned int cpu;
++	struct irmos_rq *irmos_rq;
++	struct rq *rq_;
++
++	if( !is_irmos_task(p))
++		return NULL;
++	tg = task_group(p);
++	cpu = task_cpu(p);
++	if( !rt_task(p)) { 
++#ifdef CONFIG_FAIR_GROUP_SCHED
++		rq_ = container_of(tg->cfs_rq[cpu], struct rq, cfs); 
++#endif
++	}
++	else {
++#ifdef CONFIG_RT_GROUP_SCHED
++		rq_ = container_of(tg->rt_rq[cpu], struct rq, rt);
++#endif
++	}
++		
++	irmos_rq = container_of(rq_, struct irmos_rq, rq_);
++	
++	return irmos_rq;
++}
++
++static int
++task_is_boosted(struct task_struct *p)
++{
++	return p->prio != p->normal_prio;
++}
++
++static inline int
++irmos_rq_throttled(struct irmos_rq *irmos_rq)
++{	
++	return irmos_rq->irmos_throttled && !irmos_rq->irmos_nr_boosted;
++}
++
++static int
++irmos_rq_boosted(struct irmos_rq *irmos_rq)
++{
++	return irmos_rq->highest_prio;
++}
++
++static inline struct rq*
++rq_of_irmos_rq(struct irmos_rq *irmos_rq)
++{
++	return &irmos_rq->rq_;
++}
++
++static inline int
++irmos_rq_on_rq(struct irmos_rq *irmos_rq)
++{
++	return !RB_EMPTY_NODE(&irmos_rq->rb_node);
++}
++
++static inline int
++irmos_time_before(u64 a, u64 b)
++{
++	return (s64)(a-b) < 0;
++}
++
++static inline int
++irmos_rq_prio(struct irmos_rq *irmos_rq)
++{
++	return irmos_rq->highest_prio;
++}
++
++static inline int
++irmos_rq_before(struct irmos_rq *a, struct irmos_rq *b)
++{
++	/*
++	 * Schedule by priority if :
++	 * - both a and b are boosted
++	 * - throttling is disabled system-wide
++	 */
++	if( (a->irmos_nr_boosted && b->irmos_nr_boosted) ||
++		global_rt_runtime() == RUNTIME_INF)
++			return irmos_rq_prio(a) < irmos_rq_prio(b);
++	
++	/* Only a is boosted, choose it. */
++	if( a->irmos_nr_boosted)
++		return 1;
++	/* Only b is boosted, choose it. */
++	if( b->irmos_nr_boosted)
++		return 0;
++	/* Order by deadline */
++	return irmos_time_before(a->irmos_deadline, b->irmos_deadline);
++}
++
++static void
++irmos_rq_update_deadline(struct irmos_rq *irmos_rq)
++{
++	struct rq *rq = irmos_rq->rq; //rq_of_irmos_rq(irmos_rq);
++	u64 runtime, period, left, right;
++
++	raw_spin_lock(&irmos_rq->irmos_runtime_lock);
++
++	//irmos_rq->irmos_start_time = rq->clock_task;
++	runtime = irmos_rq->irmos_runtime;
++	period = ktime_to_ns(irmos_rq->irmos_period);
++
++	/*
++	 * Update the deadline if
++	 * - it is in the past
++	 * - using it would lead to a timeframe during which the
++	 *   group would exceed i-st allocated bandwidth
++	 */
++	if( irmos_time_before(irmos_rq->irmos_deadline, rq->clock))
++		goto update;
++
++	WARN_ON_ONCE(irmos_rq->irmos_time > runtime);
++
++	left = period * (runtime - irmos_rq->irmos_time);
++	right = (irmos_rq->irmos_deadline - rq->clock)*irmos_rq->irmos_runtime;
++
++	//printk("left=%ld, right=%ld\n", runtime-irmos_rq->irmos_time,
++	//				irmos_rq->irmos_deadline - rq->clock);	
++
++	if( left > right) {
++update:
++	//	printk("--------------------\n");
++		//printk("Before update: irmos_time=%lu, runtime=%lu, deadline=%lu, clock=%lu, nr_boosted=%d, throttled=%d\n", irmos_rq->irmos_time, irmos_rq->irmos_runtime, irmos_rq->irmos_deadline, rq->clock, irmos_rq->irmos_nr_boosted, irmos_rq->irmos_throttled);
++		irmos_rq->irmos_deadline = rq->clock + period;
++		irmos_rq->irmos_time -= min(runtime, irmos_rq->irmos_time);
++
++		while( irmos_rq->irmos_time > runtime) {
++			irmos_rq->irmos_deadline += period;
++			irmos_rq->irmos_time -= runtime;
++		}
++		
++	//	printk("After update: irmos_time=%lu\n", irmos_rq->irmos_time);
++		
++		/* 
++		 * In my opinion, it's better to do a further check:
++		 */
++/*		left = period * (runtime - irmos_rq->irmos_time);
++		right = (irmos_rq->deadline - rq->clock)*
++						irmos_rq->irmos_runtime;
++		if( left > right) {
++			irmos_rq->irmos_deadline = rq->clock + period;
++			irmos_rq->irmos_time -=  irmos_rq->irmos_time;
++		}
++*/		
++		if( hrtimer_active(&irmos_rq->irmos_period_timer))
++			irmos_rq->irmos_needs_resync = true;
++	}
++		
++	raw_spin_unlock(&irmos_rq->irmos_runtime_lock);
++}
++		
++static void
++__enqueue_irmos_rq(struct irmos_rq *irmos_rq)
++{
++	struct rq *rq = irmos_rq->rq;  //rq_of_irmos_rq(irmos_rq);
++	struct irmos_edf_tree *irmos_tree = &rq->irmos; //.irmos_edf_tree;
++	struct rb_node **link = &(irmos_tree->rb_root.rb_node);
++	struct rb_node *parent = NULL;
++	struct irmos_rq *entry;
++	int leftmost = 1;
++
++	BUG_ON(irmos_rq_on_rq(irmos_rq));
++
++	while(*link) {
++		parent = *link;
++		entry = rb_entry(parent, struct irmos_rq, rb_node);
++		
++		if( irmos_rq_before(irmos_rq, entry))
++			link = &parent->rb_left;
++		else {
++			link = &parent->rb_right;
++			leftmost = 0;
++		}
++	}
++
++	printk("irmos_rq enqueued\n");
++	if( leftmost){
++		irmos_tree->rb_leftmost = &irmos_rq->rb_node;
++		printk("irmos_rq is leftmost\n");
++	}
++
++	rb_link_node(&irmos_rq->rb_node, parent, link);
++	rb_insert_color(&irmos_rq->rb_node, &irmos_tree->rb_root);
++}
++
++static void __dequeue_irmos_rq(struct irmos_rq *irmos_rq);
++
++static void
++enqueue_irmos_rq(struct irmos_rq *irmos_rq, int old_boosted)
++{
++	int on_rq = irmos_rq_on_rq(irmos_rq);
++	BUG_ON(!irmos_rq->irmos_nr_running);
++	BUG_ON(on_rq && irmos_rq_throttled(irmos_rq));
++
++	//printk("enqueue_irmos_rq: on_rq=%d, irmos_nr_running=%ld,old_boosted=%d, boosted=%d\n", on_rq, 
++	//		irmos_rq->irmos_nr_running, old_boosted, 
++	//		irmos_rq_boosted(irmos_rq));
++	//printk("enqueue_irmos-rq:index=%d,irmos_time=%lu, runtime=%lu, deadline=%lu, clock=%lu, nr_boosted=%d, throttled=%d, old_boosted=%d, boosted=%d\n", index++, irmos_rq->irmos_time, irmos_rq->irmos_runtime, irmos_rq->irmos_deadline, irmos_rq->rq->clock, irmos_rq->irmos_nr_boosted, irmos_rq->irmos_throttled, old_boosted, irmos_rq_boosted(irmos_rq));
++	if( irmos_rq_throttled(irmos_rq))
++		return;
++
++	if(on_rq) {
++		if( old_boosted != irmos_rq_boosted(irmos_rq)) 
++			__dequeue_irmos_rq(irmos_rq);
++		else 
++		{	
++			/* Already queued properly. */
++			return;
++		}
++	}
++
++
++	if( !irmos_rq->irmos_nr_boosted) {
++		irmos_rq_update_deadline(irmos_rq);
++		on_rq = irmos_rq_on_rq(irmos_rq);
++	}
++
++	if( !on_rq) {
++		__enqueue_irmos_rq(irmos_rq);
++	}
++}
++
++static void
++__dequeue_irmos_rq(struct irmos_rq *irmos_rq)
++{
++	struct rq *rq = irmos_rq->rq; //rq_of_irmos_rq(irmos_rq);
++	struct irmos_edf_tree *irmos_tree = &rq->irmos; /*.irmos_edf_tree;*/
++	printk("entry : __dequeue_irmos_rq\n");	
++	BUG_ON(!irmos_rq_on_rq(irmos_rq));
++	printk("entry2 : __dequeue_irmos_rq\n");	
++	
++	if( irmos_tree->rb_leftmost == &irmos_rq->rb_node) {
++		irmos_tree->rb_leftmost = rb_next(&irmos_rq->rb_node);
++		if( !irmos_tree->rb_leftmost)
++			printk("__dequeue_irmos_rq: rb_leftmost is NULL\n\n");	
++		//WARN_ON( irmos_tree->rb_leftmost == NULL);
++	}
++
++	rb_erase(&irmos_rq->rb_node, &irmos_tree->rb_root);
++	RB_CLEAR_NODE(&irmos_rq->rb_node);
++}
++
++static void
++dequeue_irmos_rq(struct irmos_rq *irmos_rq, int old_boosted)
++{
++	int on_rq = irmos_rq_on_rq(irmos_rq);
++	/*
++	 * Here we do not expect throttled irmos-rq to be in the EDF
++	 * tree; note that when they exceeded their assigned budget,
++	 * they are dequeued via sched_irmos_rq_dequeue().
++	 */
++	BUG_ON(on_rq && irmos_rq_throttled(irmos_rq));
++
++	//printk("dequeue_irmos_rq:index=%d,irmos_time=%lu, runtime=%lu, deadline=%lu, clock=%lu, nr_boosted=%d, throttled=%d, old_boosted=%d, boosted=%d\n", --index, irmos_rq->irmos_time, irmos_rq->irmos_runtime, irmos_rq->irmos_deadline, irmos_rq->rq->clock, irmos_rq->irmos_nr_boosted, irmos_rq->irmos_throttled, old_boosted, irmos_rq_boosted(irmos_rq));
++	if( on_rq && (!irmos_rq->irmos_nr_running ||
++			old_boosted != irmos_rq_boosted(irmos_rq))) {
++		/*
++		 * dequeue the irmos_rq if it has no more tasks or
++		 * its boosted priority changed.
++		 */
++		__dequeue_irmos_rq(irmos_rq);
++		on_rq = 0;
++	}
++
++	/*
++	 * If we do not need to requeue the irmos_rq, just return.
++	 */
++	if( !irmos_rq->irmos_nr_running || irmos_rq_throttled(irmos_rq))
++		return;
++	if(!on_rq)
++		__enqueue_irmos_rq(irmos_rq);
++}
++
++static void
++inc_irmos_group(struct task_struct *p, struct irmos_rq *irmos_rq)
++{
++	if( task_is_boosted(p))
++		irmos_rq->irmos_nr_boosted ++;
++}
++
++static void
++dec_irmos_group(struct task_struct *p, struct irmos_rq *irmos_rq)
++{
++	if( task_is_boosted(p))
++		irmos_rq->irmos_nr_boosted --;
++}
++
++static void
++inc_irmos_prio(struct irmos_rq *irmos_rq, int prio)
++{
++	int prev_prio = irmos_rq->highest_prio;
++	if( prio < prev_prio)
++		irmos_rq->highest_prio = prio;
++}
++
++static void
++dec_irmos_prio(struct irmos_rq *irmos_rq, int prio)
++{
++	int prev_prio = irmos_rq->highest_prio;
++	struct irmos_prio_array *array;
++	
++	if(irmos_rq->irmos_nr_running) {
++		if( prio == prev_prio) {
++			array = &irmos_rq->active;
++			irmos_rq->highest_prio = 
++				sched_find_first_bit(array->bitmap);
++		}
++	}
++	else
++		irmos_rq->highest_prio = MAX_PRIO;
++}
++
++static inline void
++inc_irmos_tasks(struct task_struct *p, struct irmos_rq *irmos_rq)
++{
++	int prio = p->prio; //normal_prio;
++	struct irmos_prio_array *array = &irmos_rq->active;
++
++	if( array->task_prio[prio] ++ == 0)
++		__set_bit(p->prio, array->bitmap);
++
++	irmos_rq->irmos_nr_running ++;
++
++	inc_irmos_prio(irmos_rq, prio);
++	inc_irmos_group(p, irmos_rq);
++}
++
++static inline void
++dec_irmos_tasks(struct task_struct *p, struct irmos_rq *irmos_rq)
++{
++	int prio = p->prio; //normal_prio;
++	struct irmos_prio_array *array = &irmos_rq->active;
++
++	if( -- array->task_prio[prio] == 0)
++		__clear_bit(p->prio, array->bitmap);
++
++	irmos_rq->irmos_nr_running --;
++
++	dec_irmos_prio(irmos_rq, prio);
++	dec_irmos_group(p, irmos_rq);
++}
++
++static u64
++sched_irmos_runtime(struct irmos_rq *irmos_rq)
++{
++/*	if( !irmos_rq->tg)
++		return RUNTIME_INF;
++	else
++*/		return irmos_rq->irmos_runtime;
++}
++
++static inline bool
++irmos_rq_is_leftmost(struct irmos_rq *irmos_rq)
++{
++	struct rq *rq = rq_of_irmos_rq(irmos_rq);
++	
++	return rq->irmos./*irmos_edf_tree.*/rb_leftmost == &irmos_rq->rb_node;
++}
++
++static void
++sched_irmos_rq_dequeue(struct irmos_rq *irmos_rq)
++{
++	if( irmos_rq_on_rq(irmos_rq))
++		__dequeue_irmos_rq(irmos_rq);
++}
++
++static void
++sched_irmos_rq_enqueue(struct irmos_rq *irmos_rq)
++{
++	if( irmos_rq->irmos_nr_running && !irmos_rq_on_rq(irmos_rq)) {
++		__enqueue_irmos_rq(irmos_rq);
++		if( irmos_rq_is_leftmost(irmos_rq))
++			resched_task(irmos_rq->rq->curr);
++	}
++}
++
++
++static void start_irmos_period_timer(struct irmos_rq *irmos_rq);
++
++/*
++ * This method is not complete yet ...
++ */
++static int
++sched_irmos_runtime_exceeded(struct irmos_rq *irmos_rq)
++{
++	u64 runtime = sched_irmos_runtime(irmos_rq);
++
++	if( irmos_rq->irmos_throttled)
++		return irmos_rq_throttled(irmos_rq);
++
++	//printk("irmos_time=%lu, runtime=%lu, RUNTIME_INF=%lu\n", irmos_rq->irmos_time, 
++					//irmos_rq->irmos_runtime, RUNTIME_INF);
++	if( runtime == RUNTIME_INF)
++		return 0;
++
++	if( irmos_rq->irmos_time < runtime)
++		return 0;
++	//printk("inside sched_irmos_runtime_exceeded\n");
++	//printk("irmos_time=%lu, runtime=%lu\n", irmos_rq->irmos_time, 
++						//irmos_rq->irmos_runtime);
++	if( irmos_rq->irmos_time >= irmos_rq->irmos_runtime) {
++		if( irmos_rq->irmos_runtime) {
++			irmos_rq->irmos_throttled = 1;
++			start_irmos_period_timer(irmos_rq);
++		}
++		else {
++			irmos_rq->irmos_time = 0;
++			printk_once("sched: RT throttling bypassed\n");
++		}
++	
++		if( irmos_rq_throttled(irmos_rq)) {
++			sched_irmos_rq_dequeue(irmos_rq);
++			return 1;
++		}
++	}
++	
++	return 0;
++}
++
++static void
++update_curr_irmos(struct rq *rq)
++{
++	struct task_struct *curr = rq->curr;
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(curr);
++	u64 delta_exec;
++
++	if( !irmos_rq)
++		return;
++
++	update_rq_clock(rq);
++
++	delta_exec = rq->clock_task - irmos_rq->irmos_start_time;//curr->se.exec_start;
++	irmos_rq->irmos_start_time = rq->clock_task;
++	if( unlikely((s64)delta_exec < 0))
++		delta_exec = 0;
++
++	if( !rt_bandwidth_enabled())
++		return;
++	//if(sched_irmos_runtime(irmos_rq) != RUNTIME_INF) {
++		raw_spin_lock(&irmos_rq->irmos_runtime_lock);
++		irmos_rq->irmos_time += delta_exec;
++		if(sched_irmos_runtime_exceeded(irmos_rq))
++		{
++			printk("the irmos_rq is throttled:irmos_time=%llu\n",
++						irmos_rq->irmos_time);
++			resched_task(curr);
++		}
++		raw_spin_unlock(&irmos_rq->irmos_runtime_lock);
++	//}
++}
++
++static inline int
++check_preempt_irmos_rq(struct task_struct *curr, struct task_struct *p)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++	struct irmos_rq *irmos_rq_curr = irmos_rq_of_task(curr);
++
++	if( !irmos_rq_curr)
++		return 1;
++
++	return irmos_rq_before(irmos_rq, irmos_rq_curr);
++}
++
++static struct irmos_rq*
++pick_next_irmos_rq(struct rq *rq)
++{
++	struct rb_node *left = rq->irmos./*irmos_edf_tree.*/rb_leftmost;	
++	if( !left) {
++		
++		return NULL;
++	}
++	
++	return rb_entry(left, struct irmos_rq, rb_node);
++}
++
++static inline bool
++irmos_rq_needs_recharge(struct irmos_rq *irmos_rq)
++{
++	if( irmos_rq->irmos_time)
++		return 1;
++
++	return 0;
++}
++
++static inline void
++sched_irmos_deadline_updated(struct irmos_rq *irmos_rq)
++{
++	int was_leftmost = irmos_rq_is_leftmost(irmos_rq);
++	
++	sched_irmos_rq_dequeue(irmos_rq);
++	sched_irmos_rq_enqueue(irmos_rq);
++
++	if( was_leftmost || irmos_rq_is_leftmost(irmos_rq))
++		resched_task(rq_of_irmos_rq(irmos_rq)->curr);
++}
++	
++static bool
++irmos_rq_recharge(struct irmos_rq *irmos_rq, int overrun)
++{
++	struct rq *rq = rq_of_irmos_rq(irmos_rq);
++	u64 runtime;
++	bool idle = true;
++
++	if( irmos_rq->irmos_time || irmos_rq->irmos_throttled) {
++		runtime = irmos_rq->irmos_runtime;
++		irmos_rq->irmos_time -= min(irmos_rq->irmos_time, 
++						overrun * runtime);
++		irmos_rq->irmos_deadline += overrun *
++					ktime_to_ns(irmos_rq->irmos_period);
++
++		if( irmos_rq->irmos_time || irmos_rq->irmos_nr_running)
++			idle =  false;
++
++		if( irmos_rq->irmos_throttled && 
++					irmos_rq->irmos_time < runtime) {
++			irmos_rq->irmos_throttled = 0;
++			sched_irmos_rq_enqueue(irmos_rq);
++
++			/*
++			 * Force a clock update if the cpu wad idle.
++			 * 
++			 */
++			if( irmos_rq->irmos_nr_running && rq->curr == rq->idle)
++				rq->skip_clock_update = -1;	
++		}
++		else if(!irmos_rq_throttled(irmos_rq)) {
++			sched_irmos_deadline_updated(irmos_rq);
++		}
++	}
++	else if( irmos_rq->irmos_nr_running)
++		idle = false;
++	return idle && ! irmos_rq_needs_recharge(irmos_rq);
++}
++		
++static bool
++do_sched_irmos_period_timer(struct irmos_rq *irmos_rq, int overruns)
++{
++        struct rq *rq = rq_of_irmos_rq(irmos_rq);
++        bool idle;
++
++        if( !rt_bandwidth_enabled() /*||irmos_rq->irmos_runtime == RUNTIME_INF*/)
++                return true;
++
++        raw_spin_lock(&rq->lock);
++        raw_spin_lock(&irmos_rq->irmos_runtime_lock);
++
++        idle = irmos_rq_recharge(irmos_rq, overruns);
++
++        raw_spin_unlock(&irmos_rq->irmos_runtime_lock);
++        raw_spin_unlock(&rq->lock);
++
++        return idle;
++}
++
++static inline void
++irmos_period_set_expires(struct irmos_rq *irmos_rq, bool force)
++{
++        struct rq *rq = rq_of_irmos_rq(irmos_rq);
++        ktime_t now, dline, delta;
++
++        if(hrtimer_active(&irmos_rq->irmos_period_timer) && !force)
++                return;
++
++        /*
++         * Compensate for discrepancies between rq->clock (used to
++         * calculate deadlines) and the hrtimer-measured time, to obtain
++         * a better absolute time instant for the timer itself.
++         */
++        now = hrtimer_cb_get_time(&irmos_rq->irmos_period_timer);
++        delta = ktime_sub_ns(now, rq->clock);
++        dline = ktime_add_ns(delta, irmos_rq->irmos_deadline);
++        hrtimer_set_expires(&irmos_rq->irmos_period_timer, dline);
++}
++
++static enum hrtimer_restart
++sched_irmos_period_timer(struct hrtimer *hrtimer)
++{
++        struct irmos_rq *irmos_rq = container_of(hrtimer, struct irmos_rq,
++                                                        irmos_period_timer);
++        int overrun;
++        bool idle = false;
++
++	printk("sched_irmos_period_timer\n");
++        if( irmos_rq->irmos_needs_resync) {
++                /*
++                 * Resync the period timer with the actual deadline;
++                 * we want to be careful and check again for overruns
++                 * and recharges.
++                 * Note that if irmos_needs_resync is set we do ot need
++                 * to recharge according to the old deadline, as the 
++                 * deadline update path has rset deadline and irmos_time
++                 * for us. In the common case we do not expect overruns,
++                 * as the new deadline should be in the future, so we 
++                 * need to restart the timer only if irmos_rq is already
++                 * throttled; if this is not the case we handle the overruns
++                 * as usual, and they'll give us a new value for idle.
++                 */
++                idle = !irmos_rq->irmos_throttled;
++                irmos_rq->irmos_needs_resync = false;
++                irmos_period_set_expires(irmos_rq, true);
++        }
++
++        for(;;) {
++                overrun = hrtimer_forward_now(hrtimer, irmos_rq->irmos_period);
++                if( overrun) {
++                        /*
++                         * Recharge as if we had expired overrun times. 
++                        */
++                        idle = do_sched_irmos_period_timer(irmos_rq, overrun);
++			printk("sched_irmos_period_timer: overrun=%d\n", overrun);
++                }
++                else {
++                        /*
++                         * No overruns, even after the eventual resync,
++                         * the timer is either ready or won't need to be
++                         * restarted.
++                         */
++                        break;
++                }
++        }
++
++        BUG_ON(irmos_rq->irmos_nr_running && !irmos_rq_on_rq(irmos_rq) && idle);
++	printk("idele=%d\n", idle);
++        return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
++       // return  HRTIMER_RESTART;
++
++}
++
++static inline void irmos_compensate_overruns(struct irmos_rq *irmos_rq,
++							int overrun)
++{
++	if( unlikely(overrun))
++		irmos_rq_recharge(irmos_rq, overrun);
++}
++
++static void start_irmos_period_timer(struct irmos_rq *irmos_rq)
++{
++        ktime_t soft, hard;
++        unsigned long range;
++        int overrun;
++
++	printk("irmos timer starts\n");
++        irmos_period_set_expires(irmos_rq, false);
++
++        for (;;) {
++                /* Timer started, we'll get our recharge. */
++                if (hrtimer_active(&irmos_rq->irmos_period_timer))
++                        break;
++
++                /* Make sure dline is in the future when the timer starts. */
++                overrun = hrtimer_forward_now(&irmos_rq->irmos_period_timer,
++                                              irmos_rq->irmos_period);
++
++		printk("start_irmos_period_timer: overrun=%d\n", overrun);
++                /* Update deadline and handle recharges in case of overrun. */
++                irmos_compensate_overruns(irmos_rq, overrun);
++
++                /* Avoid unnecessary timer expirations. */
++                if (!irmos_rq_needs_recharge(irmos_rq))
++                        break;
++
++		printk("irmos rq needs recharge\n");
++
++                /* Try to program the timer. */
++                soft = hrtimer_get_softexpires(&irmos_rq->irmos_period_timer);
++                hard = hrtimer_get_expires(&irmos_rq->irmos_period_timer);
++                range = ktime_to_ns(ktime_sub(hard, soft));
++                __hrtimer_start_range_ns(&irmos_rq->irmos_period_timer, soft,
++                                         range, HRTIMER_MODE_ABS, 0);
++        }
++
++        BUG_ON(!hrtimer_active(&irmos_rq->irmos_period_timer) &&
++                irmos_rq->irmos_nr_running && !irmos_rq_on_rq(irmos_rq));
++
++}
++
++static int index = 0;
++static void
++enqueue_task_irmos(struct rq *rq, struct task_struct *p, int flags)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++	int boosted = irmos_rq_boosted(irmos_rq);
++	//printk("enqueue_task_irmos: index=%d, irmos_time=%llu\n\n", index++, irmos_rq->irmos_time);
++/*
++	if( !rt_task(p)) {
++		printk("cfs task: ");
++		if( p->se.cfs_rq != &irmos_rq->rq_.cfs)
++			printk("p->se.cfs_rq != &irmos_rq->rq_.cfs\n");
++		else
++			printk("p->se.cfs_rq == &irmos_rq->rq_.cfs\n");
++	}
++	else {
++		printk("rt task: ");
++		if( p->rt.rt_rq != &irmos_rq->rq_.rt)
++			printk("p->se.rt_rq != &irmos_rq->rq_.rt\n");
++		else
++			printk("p->se.rt_rq == &irmos_rq->rq_.rt\n");
++	}
++*/
++
++	update_rq_clock(&irmos_rq->rq_);
++	p->sched_class->enqueue_task(&irmos_rq->rq_, p, flags);
++
++	inc_irmos_tasks(p, irmos_rq);	
++	enqueue_irmos_rq(irmos_rq, boosted);
++/*
++	if( rq->irmos.irmos_edf_tree.rb_leftmost == NULL)
++		printk("this is not right\n");
++	if( rq->irmos.irmos_edf_tree.rb_leftmost != &irmos_rq->rb_node)
++		printk("this is not right22\n");
++	if( pick_next_irmos_rq(rq) != irmos_rq)
++		printk("something wired here!!\n");
++*/
++	inc_nr_running(rq);
++}
++	
++static void
++dequeue_task_irmos(struct rq *rq, struct task_struct *p, int flags)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++	int boosted = irmos_rq_boosted(irmos_rq);
++	//printk("dequeue_task_irmos: index=%d\n\n", --index);
++
++	update_rq_clock(&irmos_rq->rq_);
++	p->sched_class->dequeue_task(&irmos_rq->rq_, p, flags);
++
++	update_curr_irmos(rq);	
++
++	dec_irmos_tasks(p, irmos_rq);
++	dequeue_irmos_rq(irmos_rq, boosted);
++
++	dec_nr_running(rq);
++}
++
++static void
++yield_task_irmos(struct rq *rq)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(rq->curr);
++	update_curr_irmos(rq);
++	if( !irmos_rq);
++		rq->curr->sched_class->yield_task(&irmos_rq->rq_);
++}
++
++static void 
++check_preempt_curr_irmos(struct rq *rq, struct task_struct *p, int flags)
++{
++	update_curr_irmos(rq);
++	if(check_preempt_irmos_rq(rq->curr, p)) {
++		resched_task(rq->curr);
++	}
++	return;
++}
++
++static struct task_struct*
++pick_next_task_irmos(struct rq *rq)
++{
++
++	struct irmos_rq *irmos_rq; // = pick_next_irmos_rq(rq);
++	struct rq *rq_;
++	struct task_struct *p;
++	const struct sched_class *class;
++
++	update_curr_irmos(rq);
++	irmos_rq = pick_next_irmos_rq(rq);
++
++	if( !irmos_rq) {
++		//BUG_ON(1);
++		//printk("a null irmos_rq is picked up\n\n\n");
++		return NULL; //idle_sched_class.pick_next_task(rq);
++	}
++
++	irmos_rq->irmos_start_time = rq->clock_task;
++	rq_ = &irmos_rq->rq_;
++	for_each_class(class) {
++		if( class != &idle_sched_class) {
++			p = class->pick_next_task(rq_);
++			if(p) {
++				rq_->curr = p;
++				return p;
++			}
++		}
++	}
++
++	//printk("idle sched class is returned\n");
++	return NULL; //idle_sched_class.pick_next_task(rq);;
++}
++	
++static void
++put_prev_task_irmos(struct rq *rq, struct task_struct *p)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++
++	update_curr_irmos(rq);
++
++	update_rq_clock(&irmos_rq->rq_);
++	p->sched_class->put_prev_task(&irmos_rq->rq_, p);
++}
++
++static void
++set_curr_task_irmos(struct rq *rq)
++{
++	struct task_struct *p = rq->curr;
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++
++	update_curr_irmos(rq);
++
++	irmos_rq->irmos_start_time = rq->clock_task;
++	update_rq_clock(&irmos_rq->rq_);
++	p->sched_class->set_curr_task(&irmos_rq->rq_);
++}
++
++static void
++task_tick_irmos(struct rq *rq, struct task_struct *p, int queued)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++
++	update_curr_irmos(rq);
++	
++	update_rq_clock(&irmos_rq->rq_);
++	p->sched_class->task_tick(&irmos_rq->rq_, p, queued);
++}
++
++static void
++switched_from_irmos(struct rq *rq, struct task_struct *p)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++
++        //p->sched_class->switched_from(&irmos_rq->rq_, p);
++        //prev_class->switched_from(&irmos_rq->rq_, p);
++}
++
++static void
++switched_to_irmos(struct rq *rq, struct task_struct *p)
++{
++	 struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++
++        p->sched_class->switched_to(&irmos_rq->rq_, p);
++}
++
++static void
++prio_changed_irmos(struct rq *rq, struct task_struct *p, int old_prio)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++	
++	p->sched_class->prio_changed(&irmos_rq->rq_, p, old_prio);
++}
++
++static unsigned int
++get_rr_interval_irmos(struct rq *rq, struct task_struct *task)
++{
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(task);
++	return task->sched_class->get_rr_interval(&irmos_rq->rq_, task);
++}
++
++static bool 
++yield_to_task_irmos(struct rq *rq, struct task_struct *p, bool preempt)
++{
++	struct task_struct *task = rq->curr;
++	struct irmos_rq *irmos_rq = irmos_rq_of_task(task);
++	
++	return p->sched_class->yield_to_task(&irmos_rq->rq_, p, preempt);
++}	
++
++const struct sched_class irmos_sched_class = {
++        //.next                   = &rt_sched_class,
++        .enqueue_task           = enqueue_task_irmos,
++        .dequeue_task           = dequeue_task_irmos,
++        .yield_task             = yield_task_irmos,
++        .yield_to_task          = yield_to_task_irmos,
++
++        .check_preempt_curr     = check_preempt_curr_irmos,
++
++        .pick_next_task         = pick_next_task_irmos,
++        .put_prev_task          = put_prev_task_irmos,
++
++	.set_curr_task          = set_curr_task_irmos,
++        .task_tick              = task_tick_irmos,
++
++        .prio_changed           = prio_changed_irmos,
++        .switched_from          = switched_from_irmos,
++        .switched_to            = switched_to_irmos,
++
++        .get_rr_interval        = get_rr_interval_irmos,
++};

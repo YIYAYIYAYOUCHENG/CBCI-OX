@@ -1,0 +1,12 @@
+This respository keeps a patch which implements a set of Linux multiprocessor
+CPU Bandwidth Control Interfaces based on the idea of Open-Extension 
+Container. The path is for 3.4-rc1. 
+
+2012-5-17 afternnon :
+In this version, when a task group(except for the root task group) is created,
+it is associated with a hyper_irmos_rq. And tasks attached to this group are 
+scheduled above the "struct rq" belonging to the hyper_irmos_rq.
+requirements:
+	CONFIG_SMP disabled
+	CONFIG_FAIR_GROUP_SCHED and CONFIG_RT_GROUP_SCHED set
+

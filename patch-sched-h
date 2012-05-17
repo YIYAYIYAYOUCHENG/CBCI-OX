@@ -1,0 +1,145 @@
+--- a/kernel/sched/sched.h	2012-04-13 18:55:19.047278657 +0200
++++ b/kernel/sched/sched.h	2012-05-17 10:28:07.652409164 +0200
+@@ -63,6 +63,14 @@
+ 	struct list_head queue[MAX_RT_PRIO];
+ };
+ 
++/*
++ * This is the per-irmos_rq priority-queue data structure:
++ */
++struct irmos_prio_array {
++        DECLARE_BITMAP(bitmap, MAX_PRIO+1); /* include 1 bit for delimiter */
++        int task_prio[MAX_PRIO];
++};
++
+ struct rt_bandwidth {
+ 	/* nests inside the rq lock: */
+ 	raw_spinlock_t		rt_runtime_lock;
+@@ -114,6 +122,9 @@
+ 	atomic_t load_weight;
+ #endif
+ 
++//	struct irmos_rq **irmos_rq;
++//	struct irmos_rq **irmos_rq_working;
++//	struct rt_bandwidth irmos_bw;
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	struct sched_rt_entity **rt_se;
+ 	struct rt_rq **rt_rq;
+@@ -309,6 +320,53 @@
+ #endif
+ };
+ 
++
++/* Per-cgroup run queue */
++struct irmos_rq;
++
++/*
++ * This is a edf tree
++ * to keep all irmos_rq's which contain tasks in a cpu ordered 
++ * by their dynamic priorirty, 
++ * - i.e. deadline, if they are not boosted,
++ * - or if only one is boosted, the boosted one has higher priority
++ * - o.w. the static priority ??? of their highest priority task
++ */
++struct irmos_edf_tree {
++        struct rb_root rb_root;
++        struct rb_node *rb_leftmost;
++};
++
++struct hyper_irmos_rq {
++	cpumask_var_t cpus_allowed;
++	struct irmos_rq **irmos_rq;
++};
++/*
++ * root irmos_rq for irmos tasks in one cpu
++ */
++/*
++struct irmos_root_rq {
++        struct irmos_edf_tree irmos_edf_tree;
++        struct irmos_rq irmos_rq;
++};
++*/
++extern unsigned long to_ratio(u64 period, u64 runtime);
++extern struct rt_bandwidth def_irmos_bandwidth;
++extern int is_irmos_task(struct task_struct *p);
++extern void init_irmos_bandwidth(struct rt_bandwidth *rt_b, 
++					u64 period, u64 runtime);
++extern void set_irmos_rq_bandwidth(struct irmos_rq *irmoq_rq, 
++					u64 period, u64 runtime);
++extern void init_irmos_edf_tree(struct irmos_edf_tree *tree);
++extern struct irmos_rq *create_irmos_rq(struct rq *rq);
++extern struct hyper_irmos_rq * create_empty_hyper_irmos_rq(cpumask_var_t cpus);
++extern struct hyper_irmos_rq * create_hyper_irmos_rq(cpumask_var_t cpus);
++extern int attach_irmos_rq_to_hir(struct hyper_irmos_rq *hir, 
++						struct irmos_rq *irmos_rq);
++extern void attach_task_group_to_hyper_irmos_rq(struct hyper_irmos_rq *hir,
++							struct task_group *tg);	
++extern struct irmos_rq * irmos_rq_of_task(struct task_struct *p);
++//extern void init_irmos_root_rq(struct irmos_root_rq *irmos, struct rq *rq);
+ #ifdef CONFIG_SMP
+ 
+ /*
+@@ -370,6 +428,9 @@
+ 
+ 	struct cfs_rq cfs;
+ 	struct rt_rq rt;
++	//struct irmos_root_rq irmos;
++	struct irmos_edf_tree irmos;
++	int is_irmos;
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	/* list of leaf cfs_rq on this cpu: */
+@@ -465,6 +526,36 @@
+ #endif
+ };
+ 
++struct irmos_rq {
++	struct irmos_prio_array active;
++	unsigned long irmos_nr_running;
++	unsigned long irmos_nr_boosted;
++	int irmos_throttled;
++
++	u64 irmos_deadline;
++	u64 irmos_time;
++	u64 irmos_runtime;
++	ktime_t irmos_period;
++	u64 irmos_start_time;
++
++	struct hrtimer irmos_period_timer;
++	raw_spinlock_t irmos_runtime_lock;
++	unsigned long irmos_bw;
++	//int irmos_boosted;
++	int highest_prio;
++	/* a pointer to the per-cpu run queue */
++	struct rq *rq;
++	/* a pointer to the per container run queue */
++	struct rq rq_;
++	/* a not necessary label */
++	bool irmos_needs_resync;
++	struct task_group **tg;
++	/* irmos_rq is ordered in a efd tree by deadline */
++	struct rb_node rb_node;
++	/* a field that is not used for now */
++	struct list_head leaf_irmos_rq_list;	
++};
++
+ static inline int cpu_of(struct rq *rq)
+ {
+ #ifdef CONFIG_SMP
+@@ -560,7 +651,7 @@
+ #if defined(CONFIG_FAIR_GROUP_SCHED) || defined(CONFIG_RT_GROUP_SCHED)
+ 	struct task_group *tg = task_group(p);
+ #endif
+-
++	//printk("set_task_rq is called: %d\n\n\n\n\n\n", ++index1);
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	p->se.cfs_rq = tg->cfs_rq[cpu];
+ 	p->se.parent = tg->se[cpu];
+@@ -847,6 +938,7 @@
+ extern const struct sched_class rt_sched_class;
+ extern const struct sched_class fair_sched_class;
+ extern const struct sched_class idle_sched_class;
++extern const struct sched_class irmos_sched_class;
+ 
+ 
+ #ifdef CONFIG_SMP

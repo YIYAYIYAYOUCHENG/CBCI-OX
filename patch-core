@@ -1,0 +1,403 @@
+--- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
++++ b/kernel/sched/core.c	2012-05-17 14:15:23.784027089 +0200
+@@ -380,6 +380,7 @@
+  * High-resolution timer tick.
+  * Runs from hardirq context with interrupts disabled.
+  */
++static void task_tick(struct rq *rq, struct task_struct *p, int queued);
+ static enum hrtimer_restart hrtick(struct hrtimer *timer)
+ {
+ 	struct rq *rq = container_of(timer, struct rq, hrtick_timer);
+@@ -388,7 +389,8 @@
+ 
+ 	raw_spin_lock(&rq->lock);
+ 	update_rq_clock(rq);
+-	rq->curr->sched_class->task_tick(rq, rq->curr, 1);
++	//rq->curr->sched_class->task_tick(rq, rq->curr, 1);
++	task_tick(rq, rq->curr, 1);
+ 	raw_spin_unlock(&rq->lock);
+ 
+ 	return HRTIMER_NORESTART;
+@@ -716,14 +718,55 @@
+ {
+ 	update_rq_clock(rq);
+ 	sched_info_queued(p);
+-	p->sched_class->enqueue_task(rq, p, flags);
++	//p->sched_class->enqueue_task(rq, p, flags);
++	if( is_irmos_task(p))
++		irmos_sched_class.enqueue_task(rq, p, flags);
++	else
++		p->sched_class->enqueue_task(rq, p, flags);
+ }
+ 
+ static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	update_rq_clock(rq);
+ 	sched_info_dequeued(p);
+-	p->sched_class->dequeue_task(rq, p, flags);
++	//p->sched_class->dequeue_task(rq, p, flags);
++	if( is_irmos_task(p))
++		irmos_sched_class.dequeue_task(rq, p, flags);
++	else
++		p->sched_class->dequeue_task(rq, p, flags);
++}
++
++static void yield_task( struct rq *rq)
++{
++	if(is_irmos_task(rq->curr))
++		irmos_sched_class.yield_task(rq);
++	else
++		rq->curr->sched_class->yield_task(rq);
++}
++
++static void task_tick(struct rq *rq, struct task_struct *p, int queued)
++{
++	if( is_irmos_task(p))
++		irmos_sched_class.task_tick(rq, p, queued);
++	else
++		p->sched_class->task_tick(rq, p, queued);
++}
++
++static void switched_from(struct rq *rq, struct task_struct *p,
++						struct sched_class *prev_class)
++{
++	if( is_irmos_task(p))
++		prev_class->switched_from(&irmos_rq_of_task(p)->rq_, p);
++	else
++		prev_class->switched_from(rq, p);
++}
++
++static void switched_to(struct rq *rq, struct task_struct *p)
++{
++	if( is_irmos_task(p))
++		irmos_sched_class.switched_to(rq, p);
++	else
++		p->sched_class->switched_to(rq, p);
+ }
+ 
+ void activate_task(struct rq *rq, struct task_struct *p, int flags)
+@@ -1044,22 +1087,35 @@
+ 	return cpu_curr(task_cpu(p)) == p;
+ }
+ 
++static void prio_changed(struct rq *rq, struct task_struct *p, int old_prio);
+ static inline void check_class_changed(struct rq *rq, struct task_struct *p,
+ 				       const struct sched_class *prev_class,
+ 				       int oldprio)
+ {
+ 	if (prev_class != p->sched_class) {
+ 		if (prev_class->switched_from)
+-			prev_class->switched_from(rq, p);
+-		p->sched_class->switched_to(rq, p);
++			//prev_class->switched_from(rq, p);
++			switched_from(rq, p, prev_class);
++		//p->sched_class->switched_to(rq, p);
++		switched_to(rq, p);
+ 	} else if (oldprio != p->prio)
+-		p->sched_class->prio_changed(rq, p, oldprio);
++		//p->sched_class->prio_changed(rq, p, oldprio);
++		prio_changed(rq, p, oldprio);
+ }
+ 
+ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
+ {
+ 	const struct sched_class *class;
+ 
++	if( is_irmos_task(p)) {
++		irmos_sched_class.check_preempt_curr(rq, p, flags);
++		printk("check_preempt_curr_irmos is called\n");
++		return;
++	}
++
++	if( is_irmos_task(rq->curr) && !is_irmos_task(p))
++		return;	
++
+ 	if (p->sched_class == rq->curr->sched_class) {
+ 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
+ 	} else {
+@@ -1413,6 +1469,8 @@
+ {
+ 	trace_sched_wakeup(p, true);
+ 	check_preempt_curr(rq, p, wake_flags);
++	if( is_irmos_task(p))
++		printk("safe\n");
+ 
+ 	p->state = TASK_RUNNING;
+ #ifdef CONFIG_SMP
+@@ -1441,6 +1499,8 @@
+ #endif
+ 
+ 	ttwu_activate(rq, p, ENQUEUE_WAKEUP | ENQUEUE_WAKING);
++	if( is_irmos_task(p))
++		printk("ttwu_do_activate\n");
+ 	ttwu_do_wakeup(rq, p, wake_flags);
+ }
+ 
+@@ -1457,6 +1517,8 @@
+ 
+ 	rq = __task_rq_lock(p);
+ 	if (p->on_rq) {
++		if( is_irmos_task(p))
++			printk("ttwu_remote\n");
+ 		ttwu_do_wakeup(rq, p, wake_flags);
+ 		ret = 1;
+ 	}
+@@ -1529,6 +1591,8 @@
+ 	rq = __task_rq_lock(p);
+ 	if (p->on_cpu) {
+ 		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
++		if( is_irmos_task(p))
++			printk("ttwu_activate_remote\n");
+ 		ttwu_do_wakeup(rq, p, wake_flags);
+ 		ret = 1;
+ 	}
+@@ -1669,6 +1733,8 @@
+ 	if (!p->on_rq)
+ 		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
+ 
++	if( is_irmos_task(p))
++		printk("try_to_wake_up_local\n");
+ 	ttwu_do_wakeup(rq, p, 0);
+ 	ttwu_stat(p, smp_processor_id(), 0);
+ out:
+@@ -3027,7 +3093,8 @@
+ 	raw_spin_lock(&rq->lock);
+ 	update_rq_clock(rq);
+ 	update_cpu_load_active(rq);
+-	curr->sched_class->task_tick(rq, curr, 0);
++	//curr->sched_class->task_tick(rq, curr, 0);
++	task_tick(rq, rq->curr, 0);
+ 	raw_spin_unlock(&rq->lock);
+ 
+ 	perf_event_task_tick();
+@@ -3138,7 +3205,26 @@
+ {
+ 	if (prev->on_rq || rq->skip_clock_update < 0)
+ 		update_rq_clock(rq);
+-	prev->sched_class->put_prev_task(rq, prev);
++	if( is_irmos_task(prev)) 
++		irmos_sched_class.put_prev_task(rq, prev);
++	else
++		prev->sched_class->put_prev_task(rq, prev);
++}
++
++static void set_curr_task_(struct rq *rq, struct task_struct *p)
++{
++	if( is_irmos_task(p))
++		irmos_sched_class.set_curr_task(rq);
++	else
++		p->sched_class->set_curr_task(rq);
++}
++
++static void prio_changed(struct rq *rq, struct task_struct *p, int old_prio)
++{
++	if( is_irmos_task(p))
++		irmos_sched_class.prio_changed(rq, p, old_prio);
++	else
++		p->sched_class->prio_changed(rq, p, old_prio);
+ }
+ 
+ /*
+@@ -3150,6 +3236,9 @@
+ 	const struct sched_class *class;
+ 	struct task_struct *p;
+ 
++	p = irmos_sched_class.pick_next_task(rq);
++	if( p)
++		return p;
+ 	/*
+ 	 * Optimization: we know that if all tasks are in
+ 	 * the fair class we can call that function directly:
+@@ -3161,9 +3250,15 @@
+ 	}
+ 
+ 	for_each_class(class) {
++		if( class == &idle_sched_class) {
++			//printk("idle sched class is working\n\n\n");
++		//	BUG();
++		}
+ 		p = class->pick_next_task(rq);
+-		if (p)
++		if (p) {
+ 			return p;
++		}
++	
+ 	}
+ 
+ 	BUG(); /* the idle class will always have a runnable task */
+@@ -3831,7 +3926,8 @@
+ 	if (on_rq)
+ 		dequeue_task(rq, p, 0);
+ 	if (running)
+-		p->sched_class->put_prev_task(rq, p);
++		//p->sched_class->put_prev_task(rq, p);
++		put_prev_task(rq, p);
+ 
+ 	if (rt_prio(prio))
+ 		p->sched_class = &rt_sched_class;
+@@ -3841,7 +3937,8 @@
+ 	p->prio = prio;
+ 
+ 	if (running)
+-		p->sched_class->set_curr_task(rq);
++		//p->sched_class->set_curr_task(rq);
++		set_curr_task_(rq, p);
+ 	if (on_rq)
+ 		enqueue_task(rq, p, oldprio < prio ? ENQUEUE_HEAD : 0);
+ 
+@@ -4185,7 +4282,8 @@
+ 	if (on_rq)
+ 		dequeue_task(rq, p, 0);
+ 	if (running)
+-		p->sched_class->put_prev_task(rq, p);
++		//p->sched_class->put_prev_task(rq, p);
++		put_prev_task(rq, p);
+ 
+ 	p->sched_reset_on_fork = reset_on_fork;
+ 
+@@ -4194,7 +4292,8 @@
+ 	__setscheduler(rq, p, policy, param->sched_priority);
+ 
+ 	if (running)
+-		p->sched_class->set_curr_task(rq);
++		//p->sched_class->set_curr_task(rq);
++		set_curr_task_(rq, p);
+ 	if (on_rq)
+ 		enqueue_task(rq, p, 0);
+ 
+@@ -4520,7 +4619,8 @@
+ 	struct rq *rq = this_rq_lock();
+ 
+ 	schedstat_inc(rq, yld_count);
+-	current->sched_class->yield_task(rq);
++	//current->sched_class->yield_task(rq);
++	yield_task(rq);
+ 
+ 	/*
+ 	 * Since we are going to call schedule() anyway, there's
+@@ -5174,7 +5274,8 @@
+ 
+ 		next = pick_next_task(rq);
+ 		BUG_ON(!next);
+-		next->sched_class->put_prev_task(rq, next);
++		//next->sched_class->put_prev_task(rq, next);
++		put_prev_task(rq, next);
+ 
+ 		/* Find suitable destination for @next, with force if needed. */
+ 		dest_cpu = select_fallback_rq(dead_cpu, next);
+@@ -6879,6 +6980,8 @@
+ {
+ 	int i, j;
+ 	unsigned long alloc_size = 0, ptr;
++	//struct hyper_irmos_rq *root_hir = 
++	//		create_empty_hyper_irmos_rq(cpu_possible_mask);
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+@@ -6922,6 +7025,8 @@
+ 
+ 	init_rt_bandwidth(&def_rt_bandwidth,
+ 			global_rt_period(), global_rt_runtime());
++	init_irmos_bandwidth(&def_irmos_bandwidth,
++			global_rt_period(), global_rt_runtime());
+ 
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	init_rt_bandwidth(&root_task_group.rt_bandwidth,
+@@ -6929,6 +7034,7 @@
+ #endif /* CONFIG_RT_GROUP_SCHED */
+ 
+ #ifdef CONFIG_CGROUP_SCHED
++
+ 	list_add(&root_task_group.list, &task_groups);
+ 	INIT_LIST_HEAD(&root_task_group.children);
+ 	INIT_LIST_HEAD(&root_task_group.siblings);
+@@ -6944,6 +7050,7 @@
+ #endif
+ 	for_each_possible_cpu(i) {
+ 		struct rq *rq;
++		struct irmos_rq *irmos_rq;
+ 
+ 		rq = cpu_rq(i);
+ 		raw_spin_lock_init(&rq->lock);
+@@ -6952,6 +7059,18 @@
+ 		rq->calc_load_update = jiffies + LOAD_FREQ;
+ 		init_cfs_rq(&rq->cfs);
+ 		init_rt_rq(&rq->rt, rq);
++		
++		init_irmos_edf_tree(&rq->irmos);
++		/* 
++		 * Temporarily, all tasks are in a 
++		 * system level hyper container
++		 *
++		irmos_rq = create_irmos_rq(rq);
++		set_irmos_rq_bandwidth(irmos_rq, 
++				ktime_to_ns(def_irmos_bandwidth.rt_period),
++				def_irmos_bandwidth.rt_runtime);
++		attach_irmos_rq_to_hir(root_hir, irmos_rq);
++		 */
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
+ 		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
+@@ -7013,6 +7132,8 @@
+ 		atomic_set(&rq->nr_iowait, 0);
+ 	}
+ 
++	//attach_task_group_to_hyper_irmos_rq(root_hir, &root_task_group);
++
+ 	set_load_weight(&init_task);
+ 
+ #ifdef CONFIG_PREEMPT_NOTIFIERS
+@@ -7219,6 +7340,16 @@
+ {
+ 	struct task_group *tg;
+ 	unsigned long flags;
++	/*
++	 * In this attempt, the newly created group is associated to
++	 * a hyper irmos_rq.
++	 */
++	struct hyper_irmos_rq *hir = create_hyper_irmos_rq(cpu_possible_mask);
++	int i;
++	for_each_cpu(i, cpu_possible_mask)
++		set_irmos_rq_bandwidth(hir->irmos_rq[i],
++				ktime_to_ns(def_irmos_bandwidth.rt_period),
++					def_irmos_bandwidth.rt_runtime);
+ 
+ 	tg = kzalloc(sizeof(*tg), GFP_KERNEL);
+ 	if (!tg)
+@@ -7240,6 +7371,7 @@
+ 	list_add_rcu(&tg->siblings, &parent->children);
+ 	spin_unlock_irqrestore(&task_group_lock, flags);
+ 
++	attach_task_group_to_hyper_irmos_rq(hir, tg);
+ 	return tg;
+ 
+ err:
+@@ -7292,7 +7424,8 @@
+ 	if (on_rq)
+ 		dequeue_task(rq, tsk, 0);
+ 	if (unlikely(running))
+-		tsk->sched_class->put_prev_task(rq, tsk);
++		//tsk->sched_class->put_prev_task(rq, tsk);
++		put_prev_task(rq, tsk);
+ 
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	if (tsk->sched_class->task_move_group)
+@@ -7310,15 +7443,15 @@
+ }
+ #endif /* CONFIG_CGROUP_SCHED */
+ 
+-#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_CFS_BANDWIDTH)
+-static unsigned long to_ratio(u64 period, u64 runtime)
++//#if defined(CONFIG_RT_GROUP_SCHED) || defined(CONFIG_CFS_BANDWIDTH)
++unsigned long to_ratio(u64 period, u64 runtime)
+ {
+ 	if (runtime == RUNTIME_INF)
+ 		return 1ULL << 20;
+ 
+ 	return div64_u64(runtime << 20, period);
+ }
+-#endif
++//#endif
+ 
+ #ifdef CONFIG_RT_GROUP_SCHED
+ /*
