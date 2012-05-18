@@ -1,0 +1,37 @@
+--- a/kernel/sched/rt.c	2012-04-13 18:55:19.047278657 +0200
++++ b/kernel/sched/rt.c	2012-05-18 15:08:01.396791029 +0200
+@@ -82,6 +82,7 @@
+ 	rt_rq->rt_throttled = 0;
+ 	rt_rq->rt_runtime = 0;
+ 	raw_spin_lock_init(&rt_rq->rt_runtime_lock);
++
+ }
+ 
+ #ifdef CONFIG_RT_GROUP_SCHED
+@@ -133,6 +134,7 @@
+ 		struct sched_rt_entity *parent)
+ {
+ 	struct rq *rq = cpu_rq(cpu);
++	//struct rq *rq = container_of(rt_rq, struct rq, rt);
+ 
+ 	rt_rq->highest_prio.curr = MAX_RT_PRIO;
+ 	rt_rq->rt_nr_boosted = 0;
+@@ -212,7 +214,8 @@
+ static inline struct rt_rq *rt_rq_of_se(struct sched_rt_entity *rt_se)
+ {
+ 	struct task_struct *p = rt_task_of(rt_se);
+-	struct rq *rq = task_rq(p);
++	//struct rq *rq = task_rq(p);
++	struct rq *rq = task_rq_rt_irmos(p);
+ 
+ 	return &rq->rt;
+ }
+@@ -1913,7 +1916,7 @@
+ #ifdef CONFIG_SMP
+ 		if (rq->rt.overloaded && push_rt_task(rq) &&
+ 		    /* Don't resched if we changed runqueues */
+-		    rq != task_rq(p))
++		    /*rq != task_rq(p))*/ rq != task_rq_rt_irmos(p))
+ 			check_resched = 0;
+ #endif /* CONFIG_SMP */
+ 		if (check_resched && p->prio < rq->curr->prio)

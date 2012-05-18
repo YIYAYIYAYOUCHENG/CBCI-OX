@@ -1,6 +1,6 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ b/kernel/sched/irmos.c	2012-05-17 15:48:06.563611425 +0200
-@@ -0,0 +1,1194 @@
++++ b/kernel/sched/irmos.c	2012-05-18 15:33:51.752478825 +0200
+@@ -0,0 +1,1237 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
@@ -207,16 +207,16 @@
 +	set_task_rq(tsk, *cpu); 
 +}
 +
++/*
++ * TODO : the ** irmos_rq inside task_group is not considered here
++ */
 +void attach_task_group_to_hyper_irmos_rq(struct hyper_irmos_rq *hir,
 +						struct task_group *tg)
 +{
 +	int i;
 +	struct task_group *child, *parent;
 +	struct cgroup_scanner scan;
-+/* 
-+ * Temporarily, we consider a hyper irmos_rq reserve the same cpu bandwidth
-+ * in all cpus in the system.
-+ */
++
 +	tg->parent = NULL;
 +	for_each_possible_cpu(i) {
 +#ifdef CONFIG_FAIR_GROUP_SCHED
@@ -235,6 +235,10 @@
 +		tg->rt_se[i] = NULL;
 +#endif
 +		
++#if defined(CONFIG_FAIR_GROUP_SCHED) && defined(CONFIG_RT_GROUP_SCHED)
++#else
++		tg->irmos_rq[i] = hir->irmos_rq[i];
++#endif
 +		scan.cg = tg->css.cgroup;
 +		scan.test_task = NULL;
 +		scan.process_task = redirect_rq;
@@ -289,17 +293,49 @@
 +	attach_task_group_to_hyper_irmos_rq(hir, tg);
 +}
 +
++int alloc_irmos_sched_group(struct task_group *tg)
++{
++	struct irmos_rq *irmos_rq;
++#if defined(CONFIG_FAIR_GROUP_SCHED) && defined(CONFIG_RT_GROUP_SCHED)
++	return 1;
++#else
++	tg->irmos_rq = kzalloc(sizeof(irmos_rq) * nr_cpu_ids, GFP_KERNEL);
++	if( !tg->irmos_rq)	
++		return 0;
++	return 1;
++#endif
++}
++
 +int is_irmos_task(struct task_struct *p)
 +{
 +	struct rq *rq; // = p->se.cfs_rq->rq;
 +	struct irmos_rq *irmos_rq;
-+#ifdef CONFIG_FAIR_GROUP_SCHED
++/*#ifdef CONFIG_FAIR_GROUP_SCHED
 +	rq = p->se.cfs_rq->rq;
-+#elif CONFIG_RT_GROUP_SCHED
++#elif defined(CONFIG_RT_GROUP_SCHED)
 +	rq = p->rt.rt_rq->rq;
 +#else
 +	return 0;
 +#endif
++*/
++	struct task_group *tg = task_group(p);
++	//if (tg == &root_task_group)
++	//	return 0;
++	if(!rt_task(p)) {
++#ifdef CONFIG_FAIR_GROUP_SCHED
++		rq = p->se.cfs_rq->rq;
++#else
++		rq = task_rq_fair_irmos(p);
++#endif
++	}
++	else {
++#ifdef CONFIG_RT_GROUP_SCHED
++		rq = p->rt.rt_rq->rq;
++#else
++		rq = task_rq_rt_irmos(p);
++#endif
++	}
++
 +	if( rq->is_irmos == 1)
 +	{	
 +		return 1;
@@ -324,11 +360,15 @@
 +	if( !rt_task(p)) { 
 +#ifdef CONFIG_FAIR_GROUP_SCHED
 +		rq_ = container_of(tg->cfs_rq[cpu], struct rq, cfs); 
++#else
++		rq_ = task_rq_fair_irmos(p);
 +#endif
 +	}
 +	else {
 +#ifdef CONFIG_RT_GROUP_SCHED
 +		rq_ = container_of(tg->rt_rq[cpu], struct rq, rt);
++#else
++		rq_ = task_rq_rt_irmos(p);
 +#endif
 +	}
 +		
@@ -991,9 +1031,11 @@
 +static void
 +enqueue_task_irmos(struct rq *rq, struct task_struct *p, int flags)
 +{
-+	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
-+	int boosted = irmos_rq_boosted(irmos_rq);
-+	//printk("enqueue_task_irmos: index=%d, irmos_time=%llu\n\n", index++, irmos_rq->irmos_time);
++	struct irmos_rq *irmos_rq;
++	int boosted;
++	irmos_rq = irmos_rq_of_task(p);
++	boosted = irmos_rq_boosted(irmos_rq);
++	printk("enqueue_task_irmos: index=%d, irmos_time=%llu\n\n", index++, irmos_rq->irmos_time);
 +/*
 +	if( !rt_task(p)) {
 +		printk("cfs task: ");
@@ -1033,6 +1075,7 @@
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
 +	int boosted = irmos_rq_boosted(irmos_rq);
 +	//printk("dequeue_task_irmos: index=%d\n\n", --index);
++	printk("dequeue_task_irmos: index=%d, irmos_time=%llu\n\n", --index, irmos_rq->irmos_time);
 +
 +	update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->dequeue_task(&irmos_rq->rq_, p, flags);

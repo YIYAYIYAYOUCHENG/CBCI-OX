@@ -1,5 +1,5 @@
 --- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/core.c	2012-05-17 14:15:23.784027089 +0200
++++ b/kernel/sched/core.c	2012-05-18 15:10:07.537416505 +0200
 @@ -380,6 +380,7 @@
   * High-resolution timer tick.
   * Runs from hardirq context with interrupts disabled.
@@ -18,14 +18,15 @@
  	raw_spin_unlock(&rq->lock);
  
  	return HRTIMER_NORESTART;
-@@ -716,14 +718,55 @@
+@@ -716,14 +718,56 @@
  {
  	update_rq_clock(rq);
  	sched_info_queued(p);
 -	p->sched_class->enqueue_task(rq, p, flags);
 +	//p->sched_class->enqueue_task(rq, p, flags);
-+	if( is_irmos_task(p))
++	if( is_irmos_task(p)) {
 +		irmos_sched_class.enqueue_task(rq, p, flags);
++	}
 +	else
 +		p->sched_class->enqueue_task(rq, p, flags);
  }
@@ -76,7 +77,7 @@
  }
  
  void activate_task(struct rq *rq, struct task_struct *p, int flags)
-@@ -1044,22 +1087,35 @@
+@@ -1044,22 +1088,35 @@
  	return cpu_curr(task_cpu(p)) == p;
  }
  
@@ -115,7 +116,7 @@
  	if (p->sched_class == rq->curr->sched_class) {
  		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
  	} else {
-@@ -1413,6 +1469,8 @@
+@@ -1413,6 +1470,8 @@
  {
  	trace_sched_wakeup(p, true);
  	check_preempt_curr(rq, p, wake_flags);
@@ -124,7 +125,7 @@
  
  	p->state = TASK_RUNNING;
  #ifdef CONFIG_SMP
-@@ -1441,6 +1499,8 @@
+@@ -1441,6 +1500,8 @@
  #endif
  
  	ttwu_activate(rq, p, ENQUEUE_WAKEUP | ENQUEUE_WAKING);
@@ -133,7 +134,7 @@
  	ttwu_do_wakeup(rq, p, wake_flags);
  }
  
-@@ -1457,6 +1517,8 @@
+@@ -1457,6 +1518,8 @@
  
  	rq = __task_rq_lock(p);
  	if (p->on_rq) {
@@ -142,7 +143,7 @@
  		ttwu_do_wakeup(rq, p, wake_flags);
  		ret = 1;
  	}
-@@ -1529,6 +1591,8 @@
+@@ -1529,6 +1592,8 @@
  	rq = __task_rq_lock(p);
  	if (p->on_cpu) {
  		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
@@ -151,7 +152,7 @@
  		ttwu_do_wakeup(rq, p, wake_flags);
  		ret = 1;
  	}
-@@ -1669,6 +1733,8 @@
+@@ -1669,6 +1734,8 @@
  	if (!p->on_rq)
  		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
  
@@ -160,7 +161,7 @@
  	ttwu_do_wakeup(rq, p, 0);
  	ttwu_stat(p, smp_processor_id(), 0);
  out:
-@@ -3027,7 +3093,8 @@
+@@ -3027,7 +3094,8 @@
  	raw_spin_lock(&rq->lock);
  	update_rq_clock(rq);
  	update_cpu_load_active(rq);
@@ -170,7 +171,7 @@
  	raw_spin_unlock(&rq->lock);
  
  	perf_event_task_tick();
-@@ -3138,7 +3205,26 @@
+@@ -3138,7 +3206,26 @@
  {
  	if (prev->on_rq || rq->skip_clock_update < 0)
  		update_rq_clock(rq);
@@ -198,7 +199,7 @@
  }
  
  /*
-@@ -3150,6 +3236,9 @@
+@@ -3150,6 +3237,9 @@
  	const struct sched_class *class;
  	struct task_struct *p;
  
@@ -208,7 +209,7 @@
  	/*
  	 * Optimization: we know that if all tasks are in
  	 * the fair class we can call that function directly:
-@@ -3161,9 +3250,15 @@
+@@ -3161,9 +3251,15 @@
  	}
  
  	for_each_class(class) {
@@ -225,7 +226,7 @@
  	}
  
  	BUG(); /* the idle class will always have a runnable task */
-@@ -3831,7 +3926,8 @@
+@@ -3831,7 +3927,8 @@
  	if (on_rq)
  		dequeue_task(rq, p, 0);
  	if (running)
@@ -235,7 +236,7 @@
  
  	if (rt_prio(prio))
  		p->sched_class = &rt_sched_class;
-@@ -3841,7 +3937,8 @@
+@@ -3841,7 +3938,8 @@
  	p->prio = prio;
  
  	if (running)
@@ -245,7 +246,7 @@
  	if (on_rq)
  		enqueue_task(rq, p, oldprio < prio ? ENQUEUE_HEAD : 0);
  
-@@ -4185,7 +4282,8 @@
+@@ -4185,7 +4283,8 @@
  	if (on_rq)
  		dequeue_task(rq, p, 0);
  	if (running)
@@ -255,7 +256,7 @@
  
  	p->sched_reset_on_fork = reset_on_fork;
  
-@@ -4194,7 +4292,8 @@
+@@ -4194,7 +4293,8 @@
  	__setscheduler(rq, p, policy, param->sched_priority);
  
  	if (running)
@@ -265,7 +266,7 @@
  	if (on_rq)
  		enqueue_task(rq, p, 0);
  
-@@ -4520,7 +4619,8 @@
+@@ -4520,7 +4620,8 @@
  	struct rq *rq = this_rq_lock();
  
  	schedstat_inc(rq, yld_count);
@@ -275,7 +276,7 @@
  
  	/*
  	 * Since we are going to call schedule() anyway, there's
-@@ -5174,7 +5274,8 @@
+@@ -5174,7 +5275,8 @@
  
  		next = pick_next_task(rq);
  		BUG_ON(!next);
@@ -285,7 +286,7 @@
  
  		/* Find suitable destination for @next, with force if needed. */
  		dest_cpu = select_fallback_rq(dead_cpu, next);
-@@ -6879,6 +6980,8 @@
+@@ -6879,6 +6981,8 @@
  {
  	int i, j;
  	unsigned long alloc_size = 0, ptr;
@@ -294,7 +295,31 @@
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
-@@ -6922,6 +7025,8 @@
+@@ -6886,6 +6990,11 @@
+ #ifdef CONFIG_RT_GROUP_SCHED
+ 	alloc_size += 2 * nr_cpu_ids * sizeof(void **);
+ #endif
++#if defined(CONFIG_FAIR_GROUP_SCHED) && defined(CONFIG_RT_GROUP_SCHED)
++#else
++	alloc_size += nr_cpu_ids * sizeof(void **);
++#endif
++
+ #ifdef CONFIG_CPUMASK_OFFSTACK
+ 	alloc_size += num_possible_cpus() * cpumask_size();
+ #endif
+@@ -6908,6 +7017,11 @@
+ 		ptr += nr_cpu_ids * sizeof(void **);
+ 
+ #endif /* CONFIG_RT_GROUP_SCHED */
++#if defined(CONFIG_FAIR_GROUP_SCHED) && defined(CONFIG_RT_GROUP_SCHED)
++#else
++		root_task_group.irmos_rq = (struct irmos_rq **)ptr;
++		ptr += nr_cpu_ids * sizeof(void **);
++#endif
+ #ifdef CONFIG_CPUMASK_OFFSTACK
+ 		for_each_possible_cpu(i) {
+ 			per_cpu(load_balance_tmpmask, i) = (void *)ptr;
+@@ -6922,6 +7036,8 @@
  
  	init_rt_bandwidth(&def_rt_bandwidth,
  			global_rt_period(), global_rt_runtime());
@@ -303,7 +328,7 @@
  
  #ifdef CONFIG_RT_GROUP_SCHED
  	init_rt_bandwidth(&root_task_group.rt_bandwidth,
-@@ -6929,6 +7034,7 @@
+@@ -6929,6 +7045,7 @@
  #endif /* CONFIG_RT_GROUP_SCHED */
  
  #ifdef CONFIG_CGROUP_SCHED
@@ -311,7 +336,7 @@
  	list_add(&root_task_group.list, &task_groups);
  	INIT_LIST_HEAD(&root_task_group.children);
  	INIT_LIST_HEAD(&root_task_group.siblings);
-@@ -6944,6 +7050,7 @@
+@@ -6944,6 +7061,7 @@
  #endif
  	for_each_possible_cpu(i) {
  		struct rq *rq;
@@ -319,7 +344,7 @@
  
  		rq = cpu_rq(i);
  		raw_spin_lock_init(&rq->lock);
-@@ -6952,6 +7059,18 @@
+@@ -6952,6 +7070,18 @@
  		rq->calc_load_update = jiffies + LOAD_FREQ;
  		init_cfs_rq(&rq->cfs);
  		init_rt_rq(&rq->rt, rq);
@@ -338,7 +363,7 @@
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -7013,6 +7132,8 @@
+@@ -7013,6 +7143,8 @@
  		atomic_set(&rq->nr_iowait, 0);
  	}
  
@@ -347,7 +372,7 @@
  	set_load_weight(&init_task);
  
  #ifdef CONFIG_PREEMPT_NOTIFIERS
-@@ -7219,6 +7340,16 @@
+@@ -7219,6 +7351,16 @@
  {
  	struct task_group *tg;
  	unsigned long flags;
@@ -364,15 +389,26 @@
  
  	tg = kzalloc(sizeof(*tg), GFP_KERNEL);
  	if (!tg)
-@@ -7240,6 +7371,7 @@
+@@ -7230,6 +7372,9 @@
+ 	if (!alloc_rt_sched_group(tg, parent))
+ 		goto err;
+ 
++	if(!alloc_irmos_sched_group(tg))
++		goto err;
++
+ 	spin_lock_irqsave(&task_group_lock, flags);
+ 	list_add_rcu(&tg->list, &task_groups);
+ 
+@@ -7240,6 +7385,8 @@
  	list_add_rcu(&tg->siblings, &parent->children);
  	spin_unlock_irqrestore(&task_group_lock, flags);
  
 +	attach_task_group_to_hyper_irmos_rq(hir, tg);
++	tg->irmos_label = 1;
  	return tg;
  
  err:
-@@ -7292,7 +7424,8 @@
+@@ -7292,7 +7439,8 @@
  	if (on_rq)
  		dequeue_task(rq, tsk, 0);
  	if (unlikely(running))
@@ -382,7 +418,7 @@
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	if (tsk->sched_class->task_move_group)
-@@ -7310,15 +7443,15 @@
+@@ -7310,15 +7458,15 @@
  }
  #endif /* CONFIG_CGROUP_SCHED */
  

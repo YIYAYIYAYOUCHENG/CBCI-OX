@@ -1,0 +1,106 @@
+--- a/kernel/sched/fair.c	2012-04-13 18:55:19.047278657 +0200
++++ b/kernel/sched/fair.c	2012-05-18 14:44:27.305778926 +0200
+@@ -335,6 +335,7 @@
+ 	se_depth = depth_se(*se);
+ 	pse_depth = depth_se(*pse);
+ 
++	//printk("se_deptg=%d, pse_depth=%d\n", se_depth, pse_depth);
+ 	while (se_depth > pse_depth) {
+ 		se_depth--;
+ 		*se = parent_entity(*se);
+@@ -347,7 +348,9 @@
+ 
+ 	while (!is_same_group(*se, *pse)) {
+ 		*se = parent_entity(*se);
++		BUG_ON(!*se);
+ 		*pse = parent_entity(*pse);
++		BUG_ON(!*pse);
+ 	}
+ }
+ 
+@@ -370,13 +373,15 @@
+ 
+ static inline struct cfs_rq *task_cfs_rq(struct task_struct *p)
+ {
+-	return &task_rq(p)->cfs;
++	//return &task_rq(p)->cfs;
++	return &(task_rq_fair_irmos(p)->cfs);
+ }
+ 
+ static inline struct cfs_rq *cfs_rq_of(struct sched_entity *se)
+ {
+ 	struct task_struct *p = task_of(se);
+-	struct rq *rq = task_rq(p);
++	//struct rq *rq = task_rq(p);
++	struct rq *rq = task_rq_fair_irmos(p);
+ 
+ 	return &rq->cfs;
+ }
+@@ -1107,7 +1112,7 @@
+ 
+ 	update_stats_enqueue(cfs_rq, se);
+ 	check_spread(cfs_rq, se);
+-	if (se != cfs_rq->curr)
++	if (se != cfs_rq->curr) 
+ 		__enqueue_entity(cfs_rq, se);
+ 	se->on_rq = 1;
+ 
+@@ -2120,7 +2125,8 @@
+ 	struct sched_entity *se = &p->se;
+ 	struct cfs_rq *cfs_rq = cfs_rq_of(se);
+ 
+-	WARN_ON(task_rq(p) != rq);
++	//WARN_ON(task_rq(p) != rq);
++	WARN_ON(task_rq_fair_irmos(p) != rq);
+ 
+ 	if (cfs_rq->nr_running > 1) {
+ 		u64 slice = sched_slice(cfs_rq, se);
+@@ -2893,11 +2899,19 @@
+  */
+ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
+ {
+-	struct task_struct *curr = rq->curr;
+-	struct sched_entity *se = &curr->se, *pse = &p->se;
+-	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
+-	int scale = cfs_rq->nr_running >= sched_nr_latency;
+-	int next_buddy_marked = 0;
++	struct task_struct *curr;
++	struct sched_entity *se, *pse;
++	struct cfs_rq *cfs_rq;
++	int scale;
++	int next_buddy_marked;
++
++	curr = rq->curr;
++	if( !curr)
++		WARN_ON(1);
++	se = &curr->se, pse = &p->se;
++	cfs_rq = task_cfs_rq(curr);
++	scale = cfs_rq->nr_running >= sched_nr_latency;
++	next_buddy_marked = 0;
+ 
+ 	if (unlikely(se == pse))
+ 		return;
+@@ -2915,7 +2929,6 @@
+ 		set_next_buddy(pse);
+ 		next_buddy_marked = 1;
+ 	}
+-
+ 	/*
+ 	 * We can come here with TIF_NEED_RESCHED already set from new task
+ 	 * wake up path.
+@@ -5221,6 +5234,7 @@
+ static void
+ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
+ {
++	printk("entry : prio_changed_fair\n");
+ 	if (!p->se.on_rq)
+ 		return;
+ 
+@@ -5423,6 +5437,7 @@
+ 			struct sched_entity *parent)
+ {
+ 	struct rq *rq = cpu_rq(cpu);
++	//struct rq *rq = container_of(cfs_rq, struct rq, cfs);
+ 
+ 	cfs_rq->tg = tg;
+ 	cfs_rq->rq = rq;
