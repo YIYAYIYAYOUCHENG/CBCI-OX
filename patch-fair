@@ -1,5 +1,5 @@
 --- a/kernel/sched/fair.c	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/fair.c	2012-05-22 16:54:38.212056293 +0200
++++ b/kernel/sched/fair.c	2012-05-22 19:43:02.984793614 +0200
 @@ -335,6 +335,7 @@
  	se_depth = depth_se(*se);
  	pse_depth = depth_se(*pse);
@@ -38,7 +38,35 @@
  	return &rq->cfs;
  }
  
-@@ -1107,7 +1112,7 @@
+@@ -679,6 +684,7 @@
+ #if defined CONFIG_SMP && defined CONFIG_FAIR_GROUP_SCHED
+ 	cfs_rq->load_unacc_exec_time += delta_exec;
+ #endif
++
+ }
+ 
+ static void update_curr(struct cfs_rq *cfs_rq)
+@@ -686,10 +692,9 @@
+ 	struct sched_entity *curr = cfs_rq->curr;
+ 	u64 now = rq_of(cfs_rq)->clock_task;
+ 	unsigned long delta_exec;
+-
+ 	if (unlikely(!curr))
+ 		return;
+-
++	if( !is_irmos_task(task_of(curr))) {
+ 	/*
+ 	 * Get the amount of time the current task was running
+ 	 * since the last time we changed load (this cannot
+@@ -711,6 +716,7 @@
+ 	}
+ 
+ 	account_cfs_rq_runtime(cfs_rq, delta_exec);
++	}
+ }
+ 
+ static inline void
+@@ -1107,7 +1113,7 @@
  
  	update_stats_enqueue(cfs_rq, se);
  	check_spread(cfs_rq, se);
@@ -47,7 +75,7 @@
  		__enqueue_entity(cfs_rq, se);
  	se->on_rq = 1;
  
-@@ -2120,7 +2125,8 @@
+@@ -2120,7 +2126,8 @@
  	struct sched_entity *se = &p->se;
  	struct cfs_rq *cfs_rq = cfs_rq_of(se);
  
@@ -57,7 +85,7 @@
  
  	if (cfs_rq->nr_running > 1) {
  		u64 slice = sched_slice(cfs_rq, se);
-@@ -2893,11 +2899,19 @@
+@@ -2893,11 +2900,19 @@
   */
  static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_flags)
  {
@@ -82,7 +110,7 @@
  
  	if (unlikely(se == pse))
  		return;
-@@ -2915,7 +2929,6 @@
+@@ -2915,7 +2930,6 @@
  		set_next_buddy(pse);
  		next_buddy_marked = 1;
  	}
@@ -90,7 +118,7 @@
  	/*
  	 * We can come here with TIF_NEED_RESCHED already set from new task
  	 * wake up path.
-@@ -5221,6 +5234,7 @@
+@@ -5221,6 +5235,7 @@
  static void
  prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
  {
@@ -98,7 +126,7 @@
  	if (!p->se.on_rq)
  		return;
  
-@@ -5423,6 +5437,7 @@
+@@ -5423,6 +5438,7 @@
  			struct sched_entity *parent)
  {
  	struct rq *rq = cpu_rq(cpu);

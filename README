@@ -29,3 +29,6 @@ requirements:
 Improvements:
 	The bandwidth reservation for cfs tasks works. However, the statistical 
 	data recorded is not right.
+
+2012-5-22 evening v2:
+	The statistical record misbehavior problem is solved.

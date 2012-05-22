@@ -1,6 +1,6 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ b/kernel/sched/irmos.c	2012-05-22 18:53:15.791350463 +0200
-@@ -0,0 +1,1215 @@
++++ b/kernel/sched/irmos.c	2012-05-22 19:40:14.731959297 +0200
+@@ -0,0 +1,1228 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
@@ -777,9 +777,19 @@
 +	struct task_struct *curr = rq->curr;
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(curr);
 +	u64 delta_exec;
++	u64 delta_exec_task;
 +
 +	if( !irmos_rq)
 +		return;
++	/* this is for statistical record*/
++	delta_exec_task = rq->clock_task - curr->se.exec_start;	
++	if (unlikely((s64)delta_exec_task < 0))
++                delta_exec_task = 0;
++        schedstat_set(curr->se.statistics.exec_max,
++                      max(curr->se.statistics.exec_max, delta_exec_task));
++        curr->se.sum_exec_runtime += delta_exec_task;
++	curr->se.exec_start = rq->clock_task;
++        cpuacct_charge(curr, delta_exec_task);
 +
 +
 +	delta_exec = rq->clock_task - irmos_rq->irmos_start_time;
@@ -1108,6 +1118,8 @@
 +			p = class->pick_next_task(rq_);
 +			if(p) {
 +				rq_->curr = p;
++				/* this is for statistical record */
++				p->se.exec_start = rq->clock_task;
 +				return p;
 +			}
 +		}
@@ -1138,6 +1150,7 @@
 +	//update_curr_irmos(rq);
 +
 +	irmos_rq->irmos_start_time = rq->clock_task;
++	p->se.exec_start = rq->clock_task;
 +	//update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->set_curr_task(&irmos_rq->rq_);
 +}
