@@ -1,13 +1,11 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ b/kernel/sched/irmos.c	2012-05-18 15:33:51.752478825 +0200
-@@ -0,0 +1,1237 @@
++++ b/kernel/sched/irmos.c	2012-05-22 18:53:15.791350463 +0200
+@@ -0,0 +1,1215 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
 +
 +
-+//extern struct task_group *task_group(struct task_struct *p);
-+//static int index = 0;
 +struct rt_bandwidth def_irmos_bandwidth;
 +
 +static enum hrtimer_restart
@@ -23,7 +21,10 @@
 +        init_cfs_rq(&rq->cfs);
 +        init_rt_rq(&rq->rt, rq);
 +        atomic_set(&rq->nr_iowait, 0);
-+	
++#ifdef CONFIG_SMP
++	rq->cpu = per_cpu->cpu;
++#endif	
++
 +#ifdef CONFIG_FAIR_GROUP_SCHED
 +	INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
 +#endif
@@ -392,6 +393,8 @@
 +static int
 +irmos_rq_boosted(struct irmos_rq *irmos_rq)
 +{
++	if( !irmos_rq->irmos_nr_boosted)
++		return MAX_PRIO;
 +	return irmos_rq->highest_prio;
 +}
 +
@@ -444,7 +447,8 @@
 +static void
 +irmos_rq_update_deadline(struct irmos_rq *irmos_rq)
 +{
-+	struct rq *rq = irmos_rq->rq; //rq_of_irmos_rq(irmos_rq);
++	/* maybe it's better to use &irmos_rq->rq_ here */
++	struct rq *rq = irmos_rq->rq;
 +	u64 runtime, period, left, right;
 +
 +	raw_spin_lock(&irmos_rq->irmos_runtime_lock);
@@ -467,13 +471,9 @@
 +	left = period * (runtime - irmos_rq->irmos_time);
 +	right = (irmos_rq->irmos_deadline - rq->clock)*irmos_rq->irmos_runtime;
 +
-+	//printk("left=%ld, right=%ld\n", runtime-irmos_rq->irmos_time,
-+	//				irmos_rq->irmos_deadline - rq->clock);	
 +
 +	if( left > right) {
 +update:
-+	//	printk("--------------------\n");
-+		//printk("Before update: irmos_time=%lu, runtime=%lu, deadline=%lu, clock=%lu, nr_boosted=%d, throttled=%d\n", irmos_rq->irmos_time, irmos_rq->irmos_runtime, irmos_rq->irmos_deadline, rq->clock, irmos_rq->irmos_nr_boosted, irmos_rq->irmos_throttled);
 +		irmos_rq->irmos_deadline = rq->clock + period;
 +		irmos_rq->irmos_time -= min(runtime, irmos_rq->irmos_time);
 +
@@ -482,7 +482,6 @@
 +			irmos_rq->irmos_time -= runtime;
 +		}
 +		
-+	//	printk("After update: irmos_time=%lu\n", irmos_rq->irmos_time);
 +		
 +		/* 
 +		 * In my opinion, it's better to do a further check:
@@ -526,10 +525,11 @@
 +		}
 +	}
 +
-+	printk("irmos_rq enqueued\n");
++	printk("_enqueue_irmos_rq: irmos_time=%llu, irmos_runtime=%llu\n", 
++			irmos_rq->irmos_time,irmos_rq->irmos_runtime);
 +	if( leftmost){
 +		irmos_tree->rb_leftmost = &irmos_rq->rb_node;
-+		printk("irmos_rq is leftmost\n");
++		//printk("irmos_rq is leftmost\n");
 +	}
 +
 +	rb_link_node(&irmos_rq->rb_node, parent, link);
@@ -545,13 +545,6 @@
 +	BUG_ON(!irmos_rq->irmos_nr_running);
 +	BUG_ON(on_rq && irmos_rq_throttled(irmos_rq));
 +
-+	//printk("enqueue_irmos_rq: on_rq=%d, irmos_nr_running=%ld,old_boosted=%d, boosted=%d\n", on_rq, 
-+	//		irmos_rq->irmos_nr_running, old_boosted, 
-+	//		irmos_rq_boosted(irmos_rq));
-+	//printk("enqueue_irmos-rq:index=%d,irmos_time=%lu, runtime=%lu, deadline=%lu, clock=%lu, nr_boosted=%d, throttled=%d, old_boosted=%d, boosted=%d\n", index++, irmos_rq->irmos_time, irmos_rq->irmos_runtime, irmos_rq->irmos_deadline, irmos_rq->rq->clock, irmos_rq->irmos_nr_boosted, irmos_rq->irmos_throttled, old_boosted, irmos_rq_boosted(irmos_rq));
-+	if( irmos_rq_throttled(irmos_rq))
-+		return;
-+
 +	if(on_rq) {
 +		if( old_boosted != irmos_rq_boosted(irmos_rq)) 
 +			__dequeue_irmos_rq(irmos_rq);
@@ -562,6 +555,8 @@
 +		}
 +	}
 +
++	if( irmos_rq_throttled(irmos_rq))
++		return;
 +
 +	if( !irmos_rq->irmos_nr_boosted) {
 +		irmos_rq_update_deadline(irmos_rq);
@@ -578,14 +573,18 @@
 +{
 +	struct rq *rq = irmos_rq->rq; //rq_of_irmos_rq(irmos_rq);
 +	struct irmos_edf_tree *irmos_tree = &rq->irmos; /*.irmos_edf_tree;*/
-+	printk("entry : __dequeue_irmos_rq\n");	
++	struct task_struct *curr = (&irmos_rq->rq_)->curr;
++	//printk("entry : __dequeue_irmos_rq\n");	
 +	BUG_ON(!irmos_rq_on_rq(irmos_rq));
-+	printk("entry2 : __dequeue_irmos_rq\n");	
++	//printk("entry2 : __dequeue_irmos_rq\n");	
++
 +	
++	printk("_dequeue_irmos_rq: irmos_time=%llu, irmos_runtime=%llu\n", 
++			irmos_rq->irmos_time,irmos_rq->irmos_runtime);
 +	if( irmos_tree->rb_leftmost == &irmos_rq->rb_node) {
 +		irmos_tree->rb_leftmost = rb_next(&irmos_rq->rb_node);
-+		if( !irmos_tree->rb_leftmost)
-+			printk("__dequeue_irmos_rq: rb_leftmost is NULL\n\n");	
++		//if( !irmos_tree->rb_leftmost)
++	//		printk("__dequeue_irmos_rq: rb_leftmost is NULL\n\n");	
 +		//WARN_ON( irmos_tree->rb_leftmost == NULL);
 +	}
 +
@@ -752,6 +751,8 @@
 +	//printk("irmos_time=%lu, runtime=%lu\n", irmos_rq->irmos_time, 
 +						//irmos_rq->irmos_runtime);
 +	if( irmos_rq->irmos_time >= irmos_rq->irmos_runtime) {
++		printk("sched_irmos_runtime_exceeded: irmos_time=%llu\n",
++							irmos_rq->irmos_time);
 +		if( irmos_rq->irmos_runtime) {
 +			irmos_rq->irmos_throttled = 1;
 +			start_irmos_period_timer(irmos_rq);
@@ -780,26 +781,20 @@
 +	if( !irmos_rq)
 +		return;
 +
-+	update_rq_clock(rq);
 +
-+	delta_exec = rq->clock_task - irmos_rq->irmos_start_time;//curr->se.exec_start;
++	delta_exec = rq->clock_task - irmos_rq->irmos_start_time;
 +	irmos_rq->irmos_start_time = rq->clock_task;
 +	if( unlikely((s64)delta_exec < 0))
-+		delta_exec = 0;
++		delta_exec = 0; 
 +
-+	if( !rt_bandwidth_enabled())
-+		return;
-+	//if(sched_irmos_runtime(irmos_rq) != RUNTIME_INF) {
-+		raw_spin_lock(&irmos_rq->irmos_runtime_lock);
-+		irmos_rq->irmos_time += delta_exec;
-+		if(sched_irmos_runtime_exceeded(irmos_rq))
-+		{
-+			printk("the irmos_rq is throttled:irmos_time=%llu\n",
-+						irmos_rq->irmos_time);
-+			resched_task(curr);
-+		}
-+		raw_spin_unlock(&irmos_rq->irmos_runtime_lock);
-+	//}
++	raw_spin_lock(&irmos_rq->irmos_runtime_lock);
++
++	irmos_rq->irmos_time += delta_exec;
++	if(sched_irmos_runtime_exceeded(irmos_rq))
++	{
++		resched_task(curr);
++	}
++	raw_spin_unlock(&irmos_rq->irmos_runtime_lock);
 +}
 +
 +static inline int
@@ -807,6 +802,11 @@
 +{
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
 +	struct irmos_rq *irmos_rq_curr = irmos_rq_of_task(curr);
++
++	if(irmos_rq_throttled(irmos_rq))
++	{	printk("check_preempt_irmos_rq : marker\n");
++		return 0;
++	}
 +
 +	if( !irmos_rq_curr)
 +		return 1;
@@ -868,6 +868,7 @@
 +					irmos_rq->irmos_time < runtime) {
 +			irmos_rq->irmos_throttled = 0;
 +			sched_irmos_rq_enqueue(irmos_rq);
++			printk("irmos_rq_recharge: recharged\n");
 +
 +			/*
 +			 * Force a clock update if the cpu wad idle.
@@ -933,7 +934,7 @@
 +        int overrun;
 +        bool idle = false;
 +
-+	printk("sched_irmos_period_timer\n");
++//	printk("sched_irmos_period_timer\n");
 +        if( irmos_rq->irmos_needs_resync) {
 +                /*
 +                 * Resync the period timer with the actual deadline;
@@ -960,7 +961,7 @@
 +                         * Recharge as if we had expired overrun times. 
 +                        */
 +                        idle = do_sched_irmos_period_timer(irmos_rq, overrun);
-+			printk("sched_irmos_period_timer: overrun=%d\n", overrun);
++			//printk("sched_irmos_period_timer: overrun=%d\n", overrun);
 +                }
 +                else {
 +                        /*
@@ -973,7 +974,7 @@
 +        }
 +
 +        BUG_ON(irmos_rq->irmos_nr_running && !irmos_rq_on_rq(irmos_rq) && idle);
-+	printk("idele=%d\n", idle);
++	//printk("idele=%d\n", idle);
 +        return idle ? HRTIMER_NORESTART : HRTIMER_RESTART;
 +       // return  HRTIMER_RESTART;
 +
@@ -992,7 +993,7 @@
 +        unsigned long range;
 +        int overrun;
 +
-+	printk("irmos timer starts\n");
++	//printk("irmos timer starts\n");
 +        irmos_period_set_expires(irmos_rq, false);
 +
 +        for (;;) {
@@ -1004,7 +1005,7 @@
 +                overrun = hrtimer_forward_now(&irmos_rq->irmos_period_timer,
 +                                              irmos_rq->irmos_period);
 +
-+		printk("start_irmos_period_timer: overrun=%d\n", overrun);
++		//printk("start_irmos_period_timer: overrun=%d\n", overrun);
 +                /* Update deadline and handle recharges in case of overrun. */
 +                irmos_compensate_overruns(irmos_rq, overrun);
 +
@@ -1012,7 +1013,7 @@
 +                if (!irmos_rq_needs_recharge(irmos_rq))
 +                        break;
 +
-+		printk("irmos rq needs recharge\n");
++		//printk("irmos rq needs recharge\n");
 +
 +                /* Try to program the timer. */
 +                soft = hrtimer_get_softexpires(&irmos_rq->irmos_period_timer);
@@ -1027,45 +1028,20 @@
 +
 +}
 +
-+static int index = 0;
 +static void
 +enqueue_task_irmos(struct rq *rq, struct task_struct *p, int flags)
 +{
 +	struct irmos_rq *irmos_rq;
 +	int boosted;
++	printk("enqueue_task_irmos: pid=%d\n", p->pid);
 +	irmos_rq = irmos_rq_of_task(p);
 +	boosted = irmos_rq_boosted(irmos_rq);
-+	printk("enqueue_task_irmos: index=%d, irmos_time=%llu\n\n", index++, irmos_rq->irmos_time);
-+/*
-+	if( !rt_task(p)) {
-+		printk("cfs task: ");
-+		if( p->se.cfs_rq != &irmos_rq->rq_.cfs)
-+			printk("p->se.cfs_rq != &irmos_rq->rq_.cfs\n");
-+		else
-+			printk("p->se.cfs_rq == &irmos_rq->rq_.cfs\n");
-+	}
-+	else {
-+		printk("rt task: ");
-+		if( p->rt.rt_rq != &irmos_rq->rq_.rt)
-+			printk("p->se.rt_rq != &irmos_rq->rq_.rt\n");
-+		else
-+			printk("p->se.rt_rq == &irmos_rq->rq_.rt\n");
-+	}
-+*/
 +
 +	update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->enqueue_task(&irmos_rq->rq_, p, flags);
 +
-+	inc_irmos_tasks(p, irmos_rq);	
++	inc_irmos_tasks(p, irmos_rq);
 +	enqueue_irmos_rq(irmos_rq, boosted);
-+/*
-+	if( rq->irmos.irmos_edf_tree.rb_leftmost == NULL)
-+		printk("this is not right\n");
-+	if( rq->irmos.irmos_edf_tree.rb_leftmost != &irmos_rq->rb_node)
-+		printk("this is not right22\n");
-+	if( pick_next_irmos_rq(rq) != irmos_rq)
-+		printk("something wired here!!\n");
-+*/
 +	inc_nr_running(rq);
 +}
 +	
@@ -1074,13 +1050,12 @@
 +{
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
 +	int boosted = irmos_rq_boosted(irmos_rq);
-+	//printk("dequeue_task_irmos: index=%d\n\n", --index);
-+	printk("dequeue_task_irmos: index=%d, irmos_time=%llu\n\n", --index, irmos_rq->irmos_time);
 +
++	printk("dequeue_task_irmos: pid=%d\n", p->pid);
 +	update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->dequeue_task(&irmos_rq->rq_, p, flags);
 +
-+	update_curr_irmos(rq);	
++	update_curr_irmos(rq);
 +
 +	dec_irmos_tasks(p, irmos_rq);
 +	dequeue_irmos_rq(irmos_rq, boosted);
@@ -1092,15 +1067,16 @@
 +yield_task_irmos(struct rq *rq)
 +{
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(rq->curr);
-+	update_curr_irmos(rq);
-+	if( !irmos_rq);
++	//update_curr_irmos(rq);
++
++	if( irmos_rq)
 +		rq->curr->sched_class->yield_task(&irmos_rq->rq_);
 +}
 +
 +static void 
 +check_preempt_curr_irmos(struct rq *rq, struct task_struct *p, int flags)
 +{
-+	update_curr_irmos(rq);
++	//update_curr_irmos(rq);
 +	if(check_preempt_irmos_rq(rq->curr, p)) {
 +		resched_task(rq->curr);
 +	}
@@ -1116,7 +1092,7 @@
 +	struct task_struct *p;
 +	const struct sched_class *class;
 +
-+	update_curr_irmos(rq);
++	//update_curr_irmos(rq);
 +	irmos_rq = pick_next_irmos_rq(rq);
 +
 +	if( !irmos_rq) {
@@ -1137,18 +1113,19 @@
 +		}
 +	}
 +
-+	//printk("idle sched class is returned\n");
-+	return NULL; //idle_sched_class.pick_next_task(rq);;
++	return NULL;
 +}
 +	
 +static void
 +put_prev_task_irmos(struct rq *rq, struct task_struct *p)
 +{
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
-+
++	
++	if( p->on_rq)
++		update_rq_clock(&irmos_rq->rq_);
++	printk("put_prev_task: pid=%d\n", p->pid);
 +	update_curr_irmos(rq);
 +
-+	update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->put_prev_task(&irmos_rq->rq_, p);
 +}
 +
@@ -1158,10 +1135,10 @@
 +	struct task_struct *p = rq->curr;
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
 +
-+	update_curr_irmos(rq);
++	//update_curr_irmos(rq);
 +
 +	irmos_rq->irmos_start_time = rq->clock_task;
-+	update_rq_clock(&irmos_rq->rq_);
++	//update_rq_clock(&irmos_rq->rq_);
 +	p->sched_class->set_curr_task(&irmos_rq->rq_);
 +}
 +
@@ -1169,6 +1146,7 @@
 +task_tick_irmos(struct rq *rq, struct task_struct *p, int queued)
 +{
 +	struct irmos_rq *irmos_rq = irmos_rq_of_task(p);
++	printk("task_ticik_irmos : pid=%d\n", p->pid);
 +
 +	update_curr_irmos(rq);
 +	

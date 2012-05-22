@@ -23,3 +23,9 @@ Improvements:
 	tasks are scheduled under the hyper_irmos_rq's scheduling system.
 requirements:
 	CONFIG_SMP disabled
+
+
+2012-5-22 evening:
+Improvements:
+	The bandwidth reservation for cfs tasks works. However, the statistical 
+	data recorded is not right.

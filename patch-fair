@@ -1,5 +1,5 @@
 --- a/kernel/sched/fair.c	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/fair.c	2012-05-18 14:44:27.305778926 +0200
++++ b/kernel/sched/fair.c	2012-05-22 16:54:38.212056293 +0200
 @@ -335,6 +335,7 @@
  	se_depth = depth_se(*se);
  	pse_depth = depth_se(*pse);
@@ -18,7 +18,7 @@
  	}
  }
  
-@@ -370,13 +373,15 @@
+@@ -370,14 +373,16 @@
  
  static inline struct cfs_rq *task_cfs_rq(struct task_struct *p)
  {
@@ -31,11 +31,13 @@
  {
  	struct task_struct *p = task_of(se);
 -	struct rq *rq = task_rq(p);
+-
 +	//struct rq *rq = task_rq(p);
 +	struct rq *rq = task_rq_fair_irmos(p);
- 
++	/* This is equivalent to return se->cfs_rq; */
  	return &rq->cfs;
  }
+ 
 @@ -1107,7 +1112,7 @@
  
  	update_stats_enqueue(cfs_rq, se);
