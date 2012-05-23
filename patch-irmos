@@ -1,5 +1,5 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ b/kernel/sched/irmos.c	2012-05-22 19:40:14.731959297 +0200
++++ b/kernel/sched/irmos.c	2012-05-23 11:10:13.769199303 +0200
 @@ -0,0 +1,1228 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
@@ -791,7 +791,7 @@
 +	curr->se.exec_start = rq->clock_task;
 +        cpuacct_charge(curr, delta_exec_task);
 +
-+
++	/* This is for bandwidth reservation of the irmos_rq */
 +	delta_exec = rq->clock_task - irmos_rq->irmos_start_time;
 +	irmos_rq->irmos_start_time = rq->clock_task;
 +	if( unlikely((s64)delta_exec < 0))

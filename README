@@ -32,3 +32,15 @@ Improvements:
 
 2012-5-22 evening v2:
 	The statistical record misbehavior problem is solved.
+
+Milestone 2012-5-23 morning:
+	The temporary name for this project is 
+	Multiprocessor Bandwidth Control Interface(MBCI) in Linux.
+	Its architechure is based on the idea of Open-Extension(OX) Container
+	structure. And its deadline based cpu reservation mechanism is based
+	on irmos scheduler.
+	Current implementation is still experimental:
+	When a sub cgroup is created, it is associated with a hyper_irmos_rq
+	and all tasks, rt or normal, attached to this cgroup would be scheduled
+	under the hyper_irmos_rq's scheduling system. And the reservation
+	parameters of the irmos-rq are fixed. 

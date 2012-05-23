@@ -1,5 +1,5 @@
 --- a/kernel/sched/sched.h	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/sched.h	2012-05-22 19:43:16.356859934 +0200
++++ b/kernel/sched/sched.h	2012-05-22 19:53:27.599890920 +0200
 @@ -63,6 +63,14 @@
  	struct list_head queue[MAX_RT_PRIO];
  };
