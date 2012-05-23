@@ -44,3 +44,8 @@ Milestone 2012-5-23 morning:
 	and all tasks, rt or normal, attached to this cgroup would be scheduled
 	under the hyper_irmos_rq's scheduling system. And the reservation
 	parameters of the irmos-rq are fixed. 
+
+Milestone 2012-5-23 morning ps:
+	For now, MCBI works on single processor environment. As the name indicates,
+	funcationalities, such as task migrations, for multicore platform will be
+	added.
