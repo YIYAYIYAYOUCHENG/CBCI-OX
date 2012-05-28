@@ -1,5 +1,5 @@
 --- a/kernel/sched/sched.h	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/sched.h	2012-05-22 19:53:27.599890920 +0200
++++ g/kernel/sched/sched.h	2012-05-28 12:18:20.767881681 +0200
 @@ -63,6 +63,14 @@
  	struct list_head queue[MAX_RT_PRIO];
  };
@@ -15,18 +15,16 @@
  struct rt_bandwidth {
  	/* nests inside the rq lock: */
  	raw_spinlock_t		rt_runtime_lock;
-@@ -114,6 +122,10 @@
+@@ -114,6 +122,8 @@
  	atomic_t load_weight;
  #endif
  
-+//	struct irmos_rq **irmos_rq;
-+//	struct irmos_rq **irmos_rq_working;
-+//	struct rt_bandwidth irmos_bw;
++	struct hyper_irmos_rq *hir;
 +	int irmos_label;
  #ifdef CONFIG_RT_GROUP_SCHED
  	struct sched_rt_entity **rt_se;
  	struct rt_rq **rt_rq;
-@@ -121,6 +133,11 @@
+@@ -121,6 +131,11 @@
  	struct rt_bandwidth rt_bandwidth;
  #endif
  
@@ -38,7 +36,7 @@
  	struct rcu_head rcu;
  	struct list_head list;
  
-@@ -309,6 +326,54 @@
+@@ -309,6 +324,56 @@
  #endif
  };
  
@@ -88,7 +86,9 @@
 +extern void attach_task_group_to_hyper_irmos_rq(struct hyper_irmos_rq *hir,
 +							struct task_group *tg);	
 +extern struct irmos_rq * irmos_rq_of_task(struct task_struct *p);
-+extern int alloc_irmos_sched_group(struct task_group *tg);
++extern int alloc_irmos_sched_group(struct task_group *tg, 
++					struct task_group *parent);
++extern void update_curr_fair(struct cfs_rq *cfs_rq);
 +//extern void init_irmos_root_rq(struct irmos_root_rq *irmos, struct rq *rq);
  #ifdef CONFIG_SMP
  
@@ -130,7 +130,7 @@
 +	struct rq rq_;
 +	/* a not necessary label */
 +	bool irmos_needs_resync;
-+	struct task_group **tg;
++	//struct task_group **tg;
 +	/* irmos_rq is ordered in a efd tree by deadline */
 +	struct rb_node rb_node;
 +	/* a field that is not used for now */
@@ -151,7 +151,7 @@
  #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
  #define raw_rq()		(&__raw_get_cpu_var(runqueues))
  
-@@ -557,18 +659,28 @@
+@@ -557,18 +659,30 @@
  /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
  static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  {
@@ -166,24 +166,26 @@
  	p->se.cfs_rq = tg->cfs_rq[cpu];
  	p->se.parent = tg->se[cpu];
 +#else
-+	if( task_group(p) == &root_task_group)
++	//if( task_group(p) == &root_task_group)
++	if(!tg->hir) 
 +		p->se.cfs_rq = &cpu_rq(cpu)->cfs;
-+	else
-+		p->se.cfs_rq = &tg->irmos_rq[cpu]->rq_.cfs;
++	else 
++		p->se.cfs_rq = &tg->hir->irmos_rq[cpu]->rq_.cfs;
  #endif
  
  #ifdef CONFIG_RT_GROUP_SCHED
  	p->rt.rt_rq  = tg->rt_rq[cpu];
  	p->rt.parent = tg->rt_se[cpu];
 +#else
-+	if( task_group(p) == &root_task_group)
++	//if( task_group(p) == &root_task_group)
++	if(!tg->hir) 
 +		p->rt.rt_rq = &cpu_rq(cpu)->rt;
-+	else
-+		p->rt.rt_rq = &tg->irmos_rq[cpu]->rq_.rt;
++	else 
++		p->rt.rt_rq = &tg->hir->irmos_rq[cpu]->rq_.rt;
  #endif
  }
  
-@@ -847,6 +959,7 @@
+@@ -847,6 +961,7 @@
  extern const struct sched_class rt_sched_class;
  extern const struct sched_class fair_sched_class;
  extern const struct sched_class idle_sched_class;

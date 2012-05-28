@@ -1,5 +1,5 @@
 --- a/kernel/sched/rt.c	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/rt.c	2012-05-23 11:16:18.771009250 +0200
++++ g/kernel/sched/rt.c	2012-05-28 09:57:53.226091761 +0200
 @@ -82,6 +82,7 @@
  	rt_rq->rt_throttled = 0;
  	rt_rq->rt_runtime = 0;
@@ -26,17 +26,15 @@
  
  	return &rq->rt;
  }
-@@ -904,6 +907,9 @@
+@@ -904,6 +907,7 @@
  	if (curr->sched_class != &rt_sched_class)
  		return;
  
-+	if(is_irmos_task(curr))
-+		return;
 +
  	delta_exec = rq->clock_task - curr->se.exec_start;
  	if (unlikely((s64)delta_exec < 0))
  		delta_exec = 0;
-@@ -1913,7 +1919,7 @@
+@@ -1913,7 +1917,7 @@
  #ifdef CONFIG_SMP
  		if (rq->rt.overloaded && push_rt_task(rq) &&
  		    /* Don't resched if we changed runqueues */

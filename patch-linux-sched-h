@@ -1,5 +1,5 @@
 --- a/include/linux/sched.h	2012-04-13 18:55:18.851277690 +0200
-+++ b/include/linux/sched.h	2012-05-18 11:55:10.343413277 +0200
++++ g/include/linux/sched.h	2012-05-28 09:02:50.781716866 +0200
 @@ -1221,10 +1221,12 @@
  	struct sched_statistics statistics;
  #endif

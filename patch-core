@@ -1,5 +1,12 @@
 --- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
-+++ b/kernel/sched/core.c	2012-05-22 16:44:13.904960514 +0200
++++ g/kernel/sched/core.c	2012-05-28 15:45:40.429566630 +0200
+@@ -1,5 +1,5 @@
+ /*
+- *  kernel/sched/core.c
++ n  kernel/sched/core.c
+  *
+  *  Kernel scheduler and related syscalls
+  *
 @@ -380,6 +380,7 @@
   * High-resolution timer tick.
   * Runs from hardirq context with interrupts disabled.
@@ -18,7 +25,7 @@
  	raw_spin_unlock(&rq->lock);
  
  	return HRTIMER_NORESTART;
-@@ -716,14 +718,56 @@
+@@ -716,14 +718,58 @@
  {
  	update_rq_clock(rq);
  	sched_info_queued(p);
@@ -62,7 +69,9 @@
 +static void switched_from(struct rq *rq, struct task_struct *p,
 +						struct sched_class *prev_class)
 +{
-+	if( is_irmos_task(p))
++	struct irmos_rq *irmos_rq;
++
++	if( is_irmos_task(p)) 
 +		prev_class->switched_from(&irmos_rq_of_task(p)->rq_, p);
 +	else
 +		prev_class->switched_from(rq, p);
@@ -77,7 +86,7 @@
  }
  
  void activate_task(struct rq *rq, struct task_struct *p, int flags)
-@@ -1044,22 +1088,35 @@
+@@ -1044,22 +1090,34 @@
  	return cpu_curr(task_cpu(p)) == p;
  }
  
@@ -106,7 +115,6 @@
  
 +	if( is_irmos_task(p)) {
 +		irmos_sched_class.check_preempt_curr(rq, p, flags);
-+		//printk("check_preempt_curr_irmos is called\n");
 +		return;
 +	}
 +
@@ -116,7 +124,7 @@
  	if (p->sched_class == rq->curr->sched_class) {
  		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
  	} else {
-@@ -1413,6 +1470,8 @@
+@@ -1413,6 +1471,8 @@
  {
  	trace_sched_wakeup(p, true);
  	check_preempt_curr(rq, p, wake_flags);
@@ -125,7 +133,7 @@
  
  	p->state = TASK_RUNNING;
  #ifdef CONFIG_SMP
-@@ -1441,6 +1500,8 @@
+@@ -1441,6 +1501,8 @@
  #endif
  
  	ttwu_activate(rq, p, ENQUEUE_WAKEUP | ENQUEUE_WAKING);
@@ -134,7 +142,7 @@
  	ttwu_do_wakeup(rq, p, wake_flags);
  }
  
-@@ -1457,6 +1518,8 @@
+@@ -1457,6 +1519,8 @@
  
  	rq = __task_rq_lock(p);
  	if (p->on_rq) {
@@ -143,7 +151,7 @@
  		ttwu_do_wakeup(rq, p, wake_flags);
  		ret = 1;
  	}
-@@ -1529,6 +1592,8 @@
+@@ -1529,6 +1593,8 @@
  	rq = __task_rq_lock(p);
  	if (p->on_cpu) {
  		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
@@ -152,7 +160,7 @@
  		ttwu_do_wakeup(rq, p, wake_flags);
  		ret = 1;
  	}
-@@ -1669,6 +1734,8 @@
+@@ -1669,6 +1735,8 @@
  	if (!p->on_rq)
  		ttwu_activate(rq, p, ENQUEUE_WAKEUP);
  
@@ -161,7 +169,7 @@
  	ttwu_do_wakeup(rq, p, 0);
  	ttwu_stat(p, smp_processor_id(), 0);
  out:
-@@ -3027,7 +3094,8 @@
+@@ -3027,7 +3095,8 @@
  	raw_spin_lock(&rq->lock);
  	update_rq_clock(rq);
  	update_cpu_load_active(rq);
@@ -171,7 +179,7 @@
  	raw_spin_unlock(&rq->lock);
  
  	perf_event_task_tick();
-@@ -3138,7 +3206,26 @@
+@@ -3138,7 +3207,28 @@
  {
  	if (prev->on_rq || rq->skip_clock_update < 0)
  		update_rq_clock(rq);
@@ -184,8 +192,10 @@
 +
 +static void set_curr_task_(struct rq *rq, struct task_struct *p)
 +{
-+	if( is_irmos_task(p))
++	if( is_irmos_task(p)) {
++		printk("set_curr_task: pid=%d\n", p->pid);
 +		irmos_sched_class.set_curr_task(rq);
++	}
 +	else
 +		p->sched_class->set_curr_task(rq);
 +}
@@ -199,19 +209,19 @@
  }
  
  /*
-@@ -3150,6 +3237,11 @@
+@@ -3150,6 +3240,11 @@
  	const struct sched_class *class;
  	struct task_struct *p;
  
 +	p = irmos_sched_class.pick_next_task(rq);
 +	if( p) {
-+		printk("pick_next_task: irmos_task pid=%d\n", p->pid);
++		//printk("pick_next_task: irmos_task pid=%d\n", p->pid);
 +		return p;
 +	}
  	/*
  	 * Optimization: we know that if all tasks are in
  	 * the fair class we can call that function directly:
-@@ -3161,9 +3253,15 @@
+@@ -3161,9 +3256,15 @@
  	}
  
  	for_each_class(class) {
@@ -228,16 +238,6 @@
  	}
  
  	BUG(); /* the idle class will always have a runnable task */
-@@ -3224,6 +3322,9 @@
- 
- 	put_prev_task(rq, prev);
- 	next = pick_next_task(rq);
-+	if( is_irmos_task(prev)) {
-+		printk("__schedule: prev=%d, next=%d\n", prev->pid, next->pid);
-+	}
- 	clear_tsk_need_resched(prev);
- 	rq->skip_clock_update = 0;
- 
 @@ -3831,7 +3932,8 @@
  	if (on_rq)
  		dequeue_task(rq, p, 0);
@@ -319,7 +319,7 @@
  #ifdef CONFIG_CPUMASK_OFFSTACK
  	alloc_size += num_possible_cpus() * cpumask_size();
  #endif
-@@ -6908,6 +7022,11 @@
+@@ -6908,6 +7022,12 @@
  		ptr += nr_cpu_ids * sizeof(void **);
  
  #endif /* CONFIG_RT_GROUP_SCHED */
@@ -328,10 +328,11 @@
 +		root_task_group.irmos_rq = (struct irmos_rq **)ptr;
 +		ptr += nr_cpu_ids * sizeof(void **);
 +#endif
++		root_task_group.hir = NULL;
  #ifdef CONFIG_CPUMASK_OFFSTACK
  		for_each_possible_cpu(i) {
  			per_cpu(load_balance_tmpmask, i) = (void *)ptr;
-@@ -6922,6 +7041,8 @@
+@@ -6922,6 +7042,8 @@
  
  	init_rt_bandwidth(&def_rt_bandwidth,
  			global_rt_period(), global_rt_runtime());
@@ -340,7 +341,7 @@
  
  #ifdef CONFIG_RT_GROUP_SCHED
  	init_rt_bandwidth(&root_task_group.rt_bandwidth,
-@@ -6929,6 +7050,7 @@
+@@ -6929,6 +7051,7 @@
  #endif /* CONFIG_RT_GROUP_SCHED */
  
  #ifdef CONFIG_CGROUP_SCHED
@@ -348,7 +349,7 @@
  	list_add(&root_task_group.list, &task_groups);
  	INIT_LIST_HEAD(&root_task_group.children);
  	INIT_LIST_HEAD(&root_task_group.siblings);
-@@ -6944,6 +7066,7 @@
+@@ -6944,6 +7067,7 @@
  #endif
  	for_each_possible_cpu(i) {
  		struct rq *rq;
@@ -356,7 +357,7 @@
  
  		rq = cpu_rq(i);
  		raw_spin_lock_init(&rq->lock);
-@@ -6952,6 +7075,18 @@
+@@ -6952,6 +7076,18 @@
  		rq->calc_load_update = jiffies + LOAD_FREQ;
  		init_cfs_rq(&rq->cfs);
  		init_rt_rq(&rq->rt, rq);
@@ -375,7 +376,7 @@
  #ifdef CONFIG_FAIR_GROUP_SCHED
  		root_task_group.shares = ROOT_TASK_GROUP_LOAD;
  		INIT_LIST_HEAD(&rq->leaf_cfs_rq_list);
-@@ -7013,6 +7148,8 @@
+@@ -7013,6 +7149,8 @@
  		atomic_set(&rq->nr_iowait, 0);
  	}
  
@@ -384,10 +385,11 @@
  	set_load_weight(&init_task);
  
  #ifdef CONFIG_PREEMPT_NOTIFIERS
-@@ -7219,6 +7356,17 @@
+@@ -7219,6 +7357,19 @@
  {
  	struct task_group *tg;
  	unsigned long flags;
++#if 0
 +	/*
 +	 * In this attempt, the newly created group is associated to
 +	 * a hyper irmos_rq.
@@ -399,29 +401,30 @@
 +				ktime_to_ns(def_irmos_bandwidth.rt_period),
 +				ktime_to_ns(def_irmos_bandwidth.rt_period)*0.2
 +					/*def_irmos_bandwidth.rt_runtime*/);
++#endif
  
  	tg = kzalloc(sizeof(*tg), GFP_KERNEL);
  	if (!tg)
-@@ -7230,6 +7378,9 @@
+@@ -7230,6 +7381,9 @@
  	if (!alloc_rt_sched_group(tg, parent))
  		goto err;
  
-+	if(!alloc_irmos_sched_group(tg))
++	if(!alloc_irmos_sched_group(tg, parent))
 +		goto err;
 +
  	spin_lock_irqsave(&task_group_lock, flags);
  	list_add_rcu(&tg->list, &task_groups);
  
-@@ -7240,6 +7391,8 @@
+@@ -7240,6 +7394,8 @@
  	list_add_rcu(&tg->siblings, &parent->children);
  	spin_unlock_irqrestore(&task_group_lock, flags);
  
-+	attach_task_group_to_hyper_irmos_rq(hir, tg);
-+	tg->irmos_label = 1;
++	//attach_task_group_to_hyper_irmos_rq(hir, tg);
++	//tg->irmos_label = 1;
  	return tg;
  
  err:
-@@ -7292,7 +7445,8 @@
+@@ -7292,7 +7448,8 @@
  	if (on_rq)
  		dequeue_task(rq, tsk, 0);
  	if (unlikely(running))
@@ -431,7 +434,17 @@
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	if (tsk->sched_class->task_move_group)
-@@ -7310,15 +7464,15 @@
+@@ -7302,7 +7459,8 @@
+ 		set_task_rq(tsk, task_cpu(tsk));
+ 
+ 	if (unlikely(running))
+-		tsk->sched_class->set_curr_task(rq);
++		//tsk->sched_class->set_curr_task(rq);
++		set_curr_task_(rq, tsk);
+ 	if (on_rq)
+ 		enqueue_task(rq, tsk, 0);
+ 
+@@ -7310,15 +7468,15 @@
  }
  #endif /* CONFIG_CGROUP_SCHED */
  
@@ -450,3 +463,195 @@
  
  #ifdef CONFIG_RT_GROUP_SCHED
  /*
+@@ -7933,8 +8091,191 @@
+ 	return sched_group_rt_period(cgroup_tg(cgrp));
+ }
+ #endif /* CONFIG_RT_GROUP_SCHED */
++/*
++ * Ha ... the vir_cpus concept is used again!
++ */
++struct vir_cpus {
++	struct mutex 	cir_cpus_lock;
++	cpumask_var_t	cpus_allowed;
++	struct rt_bandwidth	rt_bw[NR_CPUS];
++};
++
++static int vir_cpus_parse(const char *buf, struct vir_cpus *vir_cpus)
++{
++       const char *tmp = buf;
++       int cpu_id;
++       char *end;
++
++       while( *tmp != 0) {
++               while(isspace(*tmp))
++                       tmp ++;
++               if(*tmp==0)
++                       goto out_vir_cpus_parse;
++               cpu_id = simple_strtoull(tmp, &end, 0);
++               cpumask_set_cpu(cpu_id, vir_cpus->cpus_allowed);
++               tmp += end - tmp;
++               /*
++                * Now it is turn to get the runtime parameter.
++                */
++               while(isspace(*tmp))
++                       tmp ++;
++               if(*tmp==0)
++                       goto err_vir_cpus_parse;
++               vir_cpus->rt_bw[cpu_id].rt_runtime = 
++                                       simple_strtoull(tmp, &end, 0) *
++                                                       NSEC_PER_USEC;
++               tmp += end - tmp;
++               /*
++                * The format is runtime/period,
++                * so this time the symbol '/' is checked.
++                */
++               while(isspace(*tmp))
++                       tmp ++;
++               if(*tmp==0)
++                       goto err_vir_cpus_parse;
++               BUG_ON(*tmp != '/');
++               tmp ++;
++               /*
++                * Now let's see the period.
++                */
++               while(isspace(*tmp))
++                       tmp ++;
++               if(*tmp==0)
++                       goto err_vir_cpus_parse;
++               vir_cpus->rt_bw[cpu_id].rt_period = ns_to_ktime
++                                               (simple_strtoull(tmp, &end, 0)
++                                                       * NSEC_PER_USEC);
++               tmp += end - tmp;
++       }       
++out_vir_cpus_parse:
++       return 0;
++err_vir_cpus_parse:
++       return -EINVAL;
++}
++
++static int oxc_write(struct cgroup *cg, struct cftype *cft, const char *buf)
++{
++	int i;
++	struct vir_cpus	vir_cpus;
++	struct task_group *tg = cgroup_tg(cg);
++	u64 period, runtime;
++	int retval;
++	struct hyper_irmos_rq *hir;
++	struct irmos_rq *irmos_rq;
++	/*if( tg->irmos_label == 100)
++		return -1;
++	else
++	*/
++	//tg->irmos_label = 1;	
++	if( !alloc_cpumask_var(&vir_cpus.cpus_allowed, GFP_KERNEL))
++		return -1;
++
++	cpumask_clear(vir_cpus.cpus_allowed);
++
++	retval = vir_cpus_parse(buf, &vir_cpus);
++
++	if( retval != 0)
++		return retval;
++
++	if(!tg->hir || tg->irmos_label == 100) {
++
++		hir = create_hyper_irmos_rq(vir_cpus.cpus_allowed);
++		for_each_cpu(i, vir_cpus.cpus_allowed) {
++			period = ktime_to_ns(vir_cpus.rt_bw[i].rt_period);
++			runtime = vir_cpus.rt_bw[i].rt_runtime;
++	
++			set_irmos_rq_bandwidth(hir->irmos_rq[i], 
++							period, runtime);
++		}
++		
++		attach_task_group_to_hyper_irmos_rq(hir, tg);
++		return 0;
++	}
++	
++	for_each_cpu(i, vir_cpus.cpus_allowed) {
++		if( cpumask_test_cpu(i, vir_cpus.cpus_allowed)) {
++			period = ktime_to_ns(vir_cpus.rt_bw[i].rt_period);
++			runtime = vir_cpus.rt_bw[i].rt_runtime;
++
++			set_irmos_rq_bandwidth(tg->hir->irmos_rq[i], 
++							period, runtime);
++		}
++		else {
++			irmos_rq = create_irmos_rq(cpu_rq(i));
++			attach_irmos_rq_to_hir(tg->hir, irmos_rq);
++			tg->irmos_rq[i] = irmos_rq;
++		}
++	}
++
++	return 0;
++}			
++		
++static size_t oxc_sprintf_vir_cpus(char *s, struct task_group *tg, ssize_t len)
++{
++	size_t count = 0, retval = 0;
++	int i;
++	u64 period, runtime;
++
++	for_each_cpu(i, tg->hir->cpus_allowed) {
++		if(cpumask_test_cpu(i, tg->hir->cpus_allowed)) {
++			period = 
++				ktime_to_ns(tg->hir->irmos_rq[i]->irmos_period);
++			runtime = tg->hir->irmos_rq[i]->irmos_runtime;
++
++			do_div(period, NSEC_PER_USEC);
++			do_div(runtime, NSEC_PER_USEC);
++
++			count = snprintf(s, len - count, "%d %llu/%llu ",
++							i, runtime, period);
++
++			s += count;
++			retval += count;
++		}
++	}
++
++	return retval;
++}
++
++static ssize_t oxc_read(struct cgroup *cg, 
++			struct cftype *cft,
++			struct file *file, 
++			char __user *buf,
++			size_t nbytes, loff_t *ppos)
++{
++	struct task_group *tg = cgroup_tg(cg);
++	ssize_t len = 2 * PAGE_SIZE;
++	char *page;
++	char *s;
++	ssize_t retval = 0;
++
++	if( tg->irmos_label == 100)
++		return -1;
++	if( !tg->hir) 
++		return 0;
++
++	page = kzalloc(len, GFP_KERNEL);
++	if( !page)
++		return -ENOMEM;
++
++	s = page;
++
++	s += oxc_sprintf_vir_cpus(s, tg, len);
++
++	*s++ = '\n';
++	retval = simple_read_from_buffer(buf, nbytes, ppos, page, s - page);
++
++	kfree(page);
++	return retval;
++}
+ 
+ static struct cftype cpu_files[] = {
++
++	{
++		.name = "oxc_control",
++		.read = oxc_read,
++		.write_string = oxc_write,
++		.max_write_len = (100U + 6 * NR_CPUS),
++	},
+ #ifdef CONFIG_FAIR_GROUP_SCHED
+ 	{
+ 		.name = "shares",

@@ -49,3 +49,26 @@ Milestone 2012-5-23 morning ps:
 	For now, MCBI works on single processor environment. As the name indicates,
 	funcationalities, such as task migrations, for multicore platform will be
 	added.
+
+2012-5-28 night:
+	An cgroup based interface is added and users can reserve bandwidth 
+	for a subcgroup, cgroups except for the root cgroup, dynamically. 
+	For example,
+
+		echo 0 100000/1000000 > cpu.oxc_control
+
+	This reserve 100000µs every 1000000µs on cpu 0 for a cgroup and its 
+	descendant cgroups.
+
+	- By default, there is no reservation for each cgroup.
+	- When the first time a cgroup is set such a pair of parameters, the 
+	  cgroup and its descendant cgroups would be associated with a 
+	  hyper_irmos_rq, where tasks belonging to these cgroups would be 
+	  scheduled. And we call this cgroup an irmos cgroup.
+	- People can modify reservation parameters of an irmos cgroup using the 
+	  same operation.
+	- If a user tries to use the above operation on the subgroup of an irmos
+	  group, this is regarded as the same situation when reserving bandwidth 
+	  for a cgroup for the first time.
+	- No ganrantee test is used. 
+	
