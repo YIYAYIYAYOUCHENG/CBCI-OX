@@ -72,3 +72,6 @@ Milestone 2012-5-23 morning ps:
 	  for a cgroup for the first time.
 	- No ganrantee test is used. 
 	
+2012-5-29 evening
+	Now the CFS group scheduling(CONFIG_FAIR_GROUP_SCHED) is working in 
+	hyper_irmos_rq level.

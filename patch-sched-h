@@ -1,5 +1,5 @@
 --- a/kernel/sched/sched.h	2012-04-13 18:55:19.047278657 +0200
-+++ g/kernel/sched/sched.h	2012-05-28 12:18:20.767881681 +0200
++++ g/kernel/sched/sched.h	2012-05-29 13:56:29.797214284 +0200
 @@ -63,6 +63,14 @@
  	struct list_head queue[MAX_RT_PRIO];
  };
@@ -151,7 +151,7 @@
  #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
  #define raw_rq()		(&__raw_get_cpu_var(runqueues))
  
-@@ -557,18 +659,30 @@
+@@ -557,18 +659,33 @@
  /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
  static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  {
@@ -165,6 +165,9 @@
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	p->se.cfs_rq = tg->cfs_rq[cpu];
  	p->se.parent = tg->se[cpu];
++	if( is_irmos_task(p))
++	printk("set_task_rq: pid=%d, runtime=%llu\n", p->pid,
++					irmos_rq_of_task(p)->irmos_runtime);
 +#else
 +	//if( task_group(p) == &root_task_group)
 +	if(!tg->hir) 
@@ -185,7 +188,7 @@
  #endif
  }
  
-@@ -847,6 +961,7 @@
+@@ -847,6 +964,7 @@
  extern const struct sched_class rt_sched_class;
  extern const struct sched_class fair_sched_class;
  extern const struct sched_class idle_sched_class;
