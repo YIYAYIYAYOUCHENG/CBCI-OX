@@ -1,5 +1,5 @@
 --- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
-+++ g/kernel/sched/core.c	2012-05-29 13:26:06.644173755 +0200
++++ g/kernel/sched/core.c	2012-05-30 14:02:38.424897200 +0200
 @@ -1,5 +1,5 @@
  /*
 - *  kernel/sched/core.c
@@ -325,8 +325,8 @@
  #endif /* CONFIG_RT_GROUP_SCHED */
 +#if defined(CONFIG_FAIR_GROUP_SCHED) && defined(CONFIG_RT_GROUP_SCHED)
 +#else
-+		root_task_group.irmos_rq = (struct irmos_rq **)ptr;
-+		ptr += nr_cpu_ids * sizeof(void **);
++		//root_task_group.irmos_rq = (struct irmos_rq **)ptr;
++		//ptr += nr_cpu_ids * sizeof(void **);
 +#endif
 +		root_task_group.hir = NULL;
  #ifdef CONFIG_CPUMASK_OFFSTACK
@@ -575,7 +575,7 @@
 +		else {
 +			irmos_rq = create_irmos_rq(cpu_rq(i));
 +			attach_irmos_rq_to_hir(tg->hir, irmos_rq);
-+			tg->irmos_rq[i] = irmos_rq;
++			tg->hir->irmos_rq[i] = irmos_rq;
 +		}
 +	}
 +

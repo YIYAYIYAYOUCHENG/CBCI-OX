@@ -1,6 +1,6 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ g/kernel/sched/irmos.c	2012-05-29 18:28:43.346207976 +0200
-@@ -0,0 +1,1363 @@
++++ g/kernel/sched/irmos.c	2012-05-30 13:49:54.245107674 +0200
+@@ -0,0 +1,1393 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
@@ -170,6 +170,14 @@
 +}
 +
 +#ifdef CONFIG_FAIR_GROUP_SCHED
++static inline void list_del_leaf_cfs_rq(struct cfs_rq *cfs_rq)
++{
++        if (cfs_rq->on_list) {
++                list_del_rcu(&cfs_rq->leaf_cfs_rq_list);
++                cfs_rq->on_list = 0;
++        }
++}
++
 +static void init_tg_cfs_entry_irmos(struct task_group *tg, 
 +				struct cfs_rq *cfs_rq,
 +				struct sched_entity *se, int cpu,
@@ -178,6 +186,7 @@
 +{
 +	init_tg_cfs_entry(tg, cfs_rq, se, cpu, parent);
 +	//cfs_rq->rq = &irmos_rq->rq_;
++	//list_del_leaf_cfs_rq(tg->cfs_rq[cpu]);
 +	tg->cfs_rq[cpu]->rq = &irmos_rq->rq_;
 +	if( !parent && se)
 +		se->cfs_rq = &irmos_rq->rq_.cfs;
@@ -191,9 +200,14 @@
 +				struct sched_rt_entity *parent,
 +				struct irmos_rq *irmos_rq)
 +{
++	
 +	init_tg_rt_entry(tg, rt_rq, rt_se, cpu, parent);
 +	rt_rq->rq = &irmos_rq->rq_;
 +	tg->rt_rq[cpu]->rq = &irmos_rq->rq_;
++	if( !parent && !rt_se) {
++		tg->rt_rq[cpu]->rt_runtime = tg->rt_bandwidth.rt_runtime;
++	}
++		
 +	if( !parent && rt_se)
 +		rt_se->rt_rq = &irmos_rq->rq_.rt;
 +}
@@ -263,6 +277,9 @@
 +		parent = tg;
 +step1:
 +		list_for_each_entry_rcu(child, &parent->children, siblings) {
++			
++			if( child->hir)			
++				continue;
 +
 +			scan.process_task = before_redirect_rq;
 +			scan.cg = child->css.cgroup;
@@ -301,13 +318,17 @@
 +						hir->irmos_rq[i]);
 +#endif
 +#ifdef CONFIG_RT_GROUP_SCHED
-+                hir->irmos_rq[i]->rq_.rt.highest_prio.curr = MAX_RT_PRIO;
++            /*    hir->irmos_rq[i]->rq_.rt.highest_prio.curr = MAX_RT_PRIO;
 +                hir->irmos_rq[i]->rq_.rt.rt_nr_boosted = 0;
 +                hir->irmos_rq[i]->rq_.rt.rq = &hir->irmos_rq[i]->rq_;
 +                hir->irmos_rq[i]->rq_.rt.tg = tg;
 +
 +                tg->rt_rq[i] = &hir->irmos_rq[i]->rq_.rt;
 +                tg->rt_se[i] = NULL;
++	    */
++		init_tg_rt_entry_irmos(tg, &hir->irmos_rq[i]->rq_.rt,
++						NULL, i, NULL,
++						hir->irmos_rq[i]);
 +#endif
 +		/* redirect tasks', belonging to  this cgroup, runqueue 
 +		 * and enqueue them in the new runqueues 
@@ -323,6 +344,8 @@
 +re_q1:
 +                list_for_each_entry_rcu(child, &parent->children, siblings) {
 +
++			if( child->hir)			
++				continue;
 +#ifdef CONFIG_FAIR_GROUP_SCHED
 +                        init_tg_cfs_entry_irmos(child, child->cfs_rq[i],
 +                                        child->se[i], i, child->parent->se[i],
@@ -376,7 +399,6 @@
 +
 +int alloc_irmos_sched_group(struct task_group *tg, struct task_group *parent)
 +{
-+	struct irmos_rq *irmos_rq;
 +	int i;
 +
 +	tg->hir = parent->hir;
@@ -389,6 +411,13 @@
 +			if( !parent->se[i] && tg->se[i])
 +				tg->se[i]->cfs_rq = 
 +					&parent->hir->irmos_rq[i]->rq_.cfs;
++#endif
++#ifdef CONFIG_RT_GROUP_SCHED
++			tg->rt_rq[i]->rq =
++				&parent->hir->irmos_rq[i]->rq_;
++			if( !parent->se[i] && tg->se[i])
++				tg->rt_se[i]->rt_rq =
++					&parent->hir->irmos_rq[i]->rq_.rt;
 +#endif
 +		}
 +		tg->irmos_label = 100;
@@ -444,7 +473,8 @@
 +	}
 +	else {
 +#ifdef CONFIG_RT_GROUP_SCHED
-+		rq_ = container_of(tg->rt_rq[cpu], struct rq, rt);
++		//rq_ = container_of(tg->rt_rq[cpu], struct rq, rt);
++		rq_ = p->rt.rt_rq->rq;
 +#else
 +		rq_ = task_rq_rt_irmos(p);
 +#endif

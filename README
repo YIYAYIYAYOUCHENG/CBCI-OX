@@ -75,3 +75,6 @@ Milestone 2012-5-23 morning ps:
 2012-5-29 evening
 	Now the CFS group scheduling(CONFIG_FAIR_GROUP_SCHED) is working in 
 	hyper_irmos_rq level.
+
+2012-5-30 :
+	The RT group scheduling (CONFIG_RT_GROUP_SCHED) is merged into mbci.
