@@ -1,5 +1,5 @@
 --- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
-+++ g/kernel/sched/core.c	2012-05-30 14:02:38.424897200 +0200
++++ g/kernel/sched/core.c	2012-05-31 12:12:12.840913607 +0200
 @@ -1,5 +1,5 @@
  /*
 - *  kernel/sched/core.c
@@ -463,7 +463,123 @@
  
  #ifdef CONFIG_RT_GROUP_SCHED
  /*
-@@ -7933,8 +8091,187 @@
+@@ -7345,6 +7503,82 @@
+ 	u64 rt_runtime;
+ };
+ 
++
++static int tg_rt_schedulable_irmos(struct task_group *tg, void *data)
++{
++	struct rt_schedulable_data *d = data;
++	struct task_group *child;
++	unsigned long total, sum = 0;
++	int i;
++	struct hyper_irmos_rq *hir = d->tg->hir;
++	unsigned long reserved_bw = 0;
++	u64 period, runtime;
++
++	if( tg->hir != hir)
++		return 0;
++
++	period = ktime_to_ns(tg->rt_bandwidth.rt_period);
++	runtime = tg->rt_bandwidth.rt_runtime;
++
++	if (tg == d->tg) {
++		period = d->rt_period;
++		runtime = d->rt_runtime;
++	}
++
++	/*
++	 * Cannot have more runtime than the period.
++	 */
++	if (runtime > period && runtime != RUNTIME_INF)
++		return -EINVAL;
++
++	/*
++	 * Ensure we don't starve existing RT tasks.
++	 */
++	if (rt_bandwidth_enabled() && !runtime && tg_has_rt_tasks(tg))
++		return -EBUSY;
++
++	total = to_ratio(period, runtime);
++
++	/*
++	 * Nobody can have more than the global setting allows.
++	 */
++	if (total > to_ratio(global_rt_period(), global_rt_runtime()))
++		return -EINVAL;
++
++	/*
++	 * The sum of our children's runtime should not exceed our own.
++	 */
++	list_for_each_entry_rcu(child, &tg->children, siblings) {
++		if( child->hir == hir) { 
++			period = ktime_to_ns(child->rt_bandwidth.rt_period);
++			runtime = child->rt_bandwidth.rt_runtime;
++
++			if (child == d->tg) {
++				period = d->rt_period;
++				runtime = d->rt_runtime;
++			}
++
++			sum += to_ratio(period, runtime);
++		}
++	}
++
++	if (sum > total)
++		return -EINVAL;
++
++	if(hir == NULL || d->tg != tg)
++		return 0;
++
++	for_each_cpu(i, hir->cpus_allowed) {
++		reserved_bw = 
++			to_ratio( ktime_to_ns(hir->irmos_rq[i]->irmos_period),
++					hir->irmos_rq[i]->irmos_runtime);
++		if ( total > reserved_bw)
++			return -EINVAL;
++	}
++
++	return 0;
++}
++
+ static int tg_rt_schedulable(struct task_group *tg, void *data)
+ {
+ 	struct rt_schedulable_data *d = data;
+@@ -7418,6 +7652,23 @@
+ 	return ret;
+ }
+ 
++static int __rt_schedulable_irmos(struct task_group *tg, 
++					u64 period, u64 runtime)
++{
++	int ret;
++
++	struct rt_schedulable_data data = {
++		.tg = tg,
++		.rt_period = period,
++		.rt_runtime = runtime,
++	};
++
++	rcu_read_lock();
++	ret = walk_tg_tree(tg_rt_schedulable_irmos, tg_nop, &data);
++	rcu_read_unlock();
++
++	return ret;
++}
+ static int tg_set_rt_bandwidth(struct task_group *tg,
+ 		u64 rt_period, u64 rt_runtime)
+ {
+@@ -7425,7 +7676,7 @@
+ 
+ 	mutex_lock(&rt_constraints_mutex);
+ 	read_lock(&tasklist_lock);
+-	err = __rt_schedulable(tg, rt_period, rt_runtime);
++	err = __rt_schedulable_irmos(tg, rt_period, rt_runtime);
+ 	if (err)
+ 		goto unlock;
+ 
+@@ -7933,8 +8184,215 @@
  	return sched_group_rt_period(cgroup_tg(cgrp));
  }
  #endif /* CONFIG_RT_GROUP_SCHED */
@@ -529,6 +645,28 @@
 +       return -EINVAL;
 +}
 +
++#ifdef CONFIG_RT_GROUP_SCHED
++static int check_oxc_write_rt(struct task_group *tg, struct vir_cpus *vir_cpus)
++{
++	int i;
++	unsigned long rt_bw;
++	
++	if( tg->rt_bandwidth.rt_runtime == RUNTIME_INF)
++		return 0;
++
++	rt_bw = to_ratio( ktime_to_ns(tg->rt_bandwidth.rt_period),
++						tg->rt_bandwidth.rt_runtime);
++	
++	for_each_cpu(i, vir_cpus->cpus_allowed) {	
++		if( rt_bw > to_ratio( ktime_to_ns(vir_cpus->rt_bw[i].rt_period),
++					vir_cpus->rt_bw[i].rt_runtime) )
++			return -EINVAL;
++	}
++
++	return 0;
++}
++#endif
++
 +static int oxc_write(struct cgroup *cg, struct cftype *cft, const char *buf)
 +{
 +	int i;
@@ -548,6 +686,12 @@
 +
 +	if( retval != 0)
 +		return retval;
++
++#ifdef CONFIG_RT_GROUP_SCHED
++	retval = check_oxc_write_rt(tg, &vir_cpus);
++	if (retval != 0)
++		return retval;
++#endif
 +
 +	if(!tg->hir || tg->irmos_label == 100) {
 +
