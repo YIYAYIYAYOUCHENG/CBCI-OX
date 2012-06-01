@@ -1,5 +1,5 @@
 --- a/kernel/sched/sched.h	2012-04-13 18:55:19.047278657 +0200
-+++ g/kernel/sched/sched.h	2012-05-30 11:14:46.106951271 +0200
++++ g/kernel/sched/sched.h	2012-05-31 19:08:13.648687533 +0200
 @@ -63,6 +63,14 @@
  	struct list_head queue[MAX_RT_PRIO];
  };
@@ -24,7 +24,7 @@
  #ifdef CONFIG_RT_GROUP_SCHED
  	struct sched_rt_entity **rt_se;
  	struct rt_rq **rt_rq;
-@@ -309,6 +319,56 @@
+@@ -309,6 +319,60 @@
  #endif
  };
  
@@ -77,11 +77,15 @@
 +extern int alloc_irmos_sched_group(struct task_group *tg, 
 +					struct task_group *parent);
 +extern void update_curr_fair(struct cfs_rq *cfs_rq);
++extern void update_cpu_load_active(struct rq *rq);
++extern void enqueue_task(struct rq *rq, struct task_struct *p, int flags);
++extern void dequeue_task(struct rq *rq, struct task_struct *p, int flags);
++extern inline struct task_group *cgroup_tg(struct cgroup *cgrp);
 +//extern void init_irmos_root_rq(struct irmos_root_rq *irmos, struct rq *rq);
  #ifdef CONFIG_SMP
  
  /*
-@@ -370,6 +430,9 @@
+@@ -370,6 +434,9 @@
  
  	struct cfs_rq cfs;
  	struct rt_rq rt;
@@ -91,7 +95,7 @@
  
  #ifdef CONFIG_FAIR_GROUP_SCHED
  	/* list of leaf cfs_rq on this cpu: */
-@@ -465,6 +528,36 @@
+@@ -465,6 +532,37 @@
  #endif
  };
  
@@ -123,12 +127,13 @@
 +	struct rb_node rb_node;
 +	/* a field that is not used for now */
 +	struct list_head leaf_irmos_rq_list;	
++
 +};
 +
  static inline int cpu_of(struct rq *rq)
  {
  #ifdef CONFIG_SMP
-@@ -479,6 +572,10 @@
+@@ -479,6 +577,10 @@
  #define cpu_rq(cpu)		(&per_cpu(runqueues, (cpu)))
  #define this_rq()		(&__get_cpu_var(runqueues))
  #define task_rq(p)		cpu_rq(task_cpu(p))
@@ -139,7 +144,7 @@
  #define cpu_curr(cpu)		(cpu_rq(cpu)->curr)
  #define raw_rq()		(&__raw_get_cpu_var(runqueues))
  
-@@ -557,18 +654,33 @@
+@@ -557,18 +659,33 @@
  /* Change a task's cfs_rq and parent entity if it moves across CPUs/groups */
  static inline void set_task_rq(struct task_struct *p, unsigned int cpu)
  {
@@ -176,7 +181,7 @@
  #endif
  }
  
-@@ -847,6 +959,7 @@
+@@ -847,6 +964,7 @@
  extern const struct sched_class rt_sched_class;
  extern const struct sched_class fair_sched_class;
  extern const struct sched_class idle_sched_class;

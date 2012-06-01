@@ -1,5 +1,5 @@
 --- a/kernel/sched/core.c	2012-04-13 18:55:19.047278657 +0200
-+++ g/kernel/sched/core.c	2012-05-31 12:12:12.840913607 +0200
++++ g/kernel/sched/core.c	2012-05-31 17:37:48.893787658 +0200
 @@ -1,5 +1,5 @@
  /*
 - *  kernel/sched/core.c
@@ -25,7 +25,12 @@
  	raw_spin_unlock(&rq->lock);
  
  	return HRTIMER_NORESTART;
-@@ -716,14 +718,58 @@
+@@ -712,18 +714,62 @@
+ 	load->inv_weight = prio_to_wmult[prio];
+ }
+ 
+-static void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
++void enqueue_task(struct rq *rq, struct task_struct *p, int flags)
  {
  	update_rq_clock(rq);
  	sched_info_queued(p);
@@ -38,7 +43,8 @@
 +		p->sched_class->enqueue_task(rq, p, flags);
  }
  
- static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
+-static void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
++void dequeue_task(struct rq *rq, struct task_struct *p, int flags)
  {
  	update_rq_clock(rq);
  	sched_info_dequeued(p);
@@ -169,6 +175,15 @@
  	ttwu_do_wakeup(rq, p, 0);
  	ttwu_stat(p, smp_processor_id(), 0);
  out:
+@@ -2526,7 +2594,7 @@
+ 	sched_avg_update(this_rq);
+ }
+ 
+-static void update_cpu_load_active(struct rq *this_rq)
++void update_cpu_load_active(struct rq *this_rq)
+ {
+ 	update_cpu_load(this_rq);
+ 
 @@ -3027,7 +3095,8 @@
  	raw_spin_lock(&rq->lock);
  	update_rq_clock(rq);
@@ -579,6 +594,15 @@
  	if (err)
  		goto unlock;
  
+@@ -7592,7 +7843,7 @@
+ #ifdef CONFIG_CGROUP_SCHED
+ 
+ /* return corresponding task_group object of a cgroup */
+-static inline struct task_group *cgroup_tg(struct cgroup *cgrp)
++inline struct task_group *cgroup_tg(struct cgroup *cgrp)
+ {
+ 	return container_of(cgroup_subsys_state(cgrp, cpu_cgroup_subsys_id),
+ 			    struct task_group, css);
 @@ -7933,8 +8184,215 @@
  	return sched_group_rt_period(cgroup_tg(cgrp));
  }

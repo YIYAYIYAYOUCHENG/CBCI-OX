@@ -1,6 +1,6 @@
 --- a/kernel/sched/irmos.c	1970-01-01 01:00:00.000000000 +0100
-+++ g/kernel/sched/irmos.c	2012-05-30 13:49:54.245107674 +0200
-@@ -0,0 +1,1393 @@
++++ g/kernel/sched/irmos.c	2012-06-01 13:05:26.265553006 +0200
+@@ -0,0 +1,1463 @@
 +#include "sched.h"
 +#include <linux/ktime.h>
 +#include <linux/slab.h>
@@ -37,7 +37,7 @@
 +static void init_irmos_rq(struct irmos_rq *irmos_rq, struct rq *rq)
 +{
 +	struct irmos_prio_array *array;
-+	int i;
++	int i, j;
 +
 +	array = &irmos_rq->active;
 +	for( i = 0; i < MAX_PRIO; i++) {
@@ -67,6 +67,10 @@
 +        init_rq_irmos(&irmos_rq->rq_, rq);
 +        irmos_rq->irmos_needs_resync = false;
 +	RB_CLEAR_NODE(&irmos_rq->rb_node);
++
++	for (j = 0; j < CPU_LOAD_IDX_MAX; j++)
++		irmos_rq->rq_.cpu_load[j] = 0;
++
 +}
 +
 +void init_irmos_edf_tree(struct irmos_edf_tree *tree) {
@@ -213,18 +217,37 @@
 +}
 +#endif
 +
-+static void before_redirect_rq(struct task_struct *tsk, 
++static void before_redirect_rq_top(struct task_struct *tsk, 
 +					struct cgroup_scanner *scan)
 +{
 +	int *cpu = scan->data;
++	struct task_group *tg = cgroup_tg(scan->cg);
 +#ifdef CONFIG_SMP
 +        if( task_thread_info(tsk)->cpu != *cpu)
 +                return;
 +#endif
++#ifdef CONFIG_FAIR_GROUP_SCHED
++#endif
++
++	dequeue_task(cpu_rq(*cpu), tsk, 0);
++}
++
++static void before_redirect_rq(struct task_struct *p, 
++					struct cgroup_scanner *scan)
++{
++	int *cpu = scan->data;
++#ifdef CONFIG_SMP
++        if( task_thread_info(p)->cpu != *cpu)
++                return;
++#endif
++	dequeue_task(cpu_rq(*cpu), p, 0);
++
++/*
 +	if( is_irmos_task(tsk))
 +		irmos_sched_class.dequeue_task(cpu_rq(*cpu), tsk, 0);
 +	else 
 +		tsk->sched_class->dequeue_task(cpu_rq(*cpu), tsk, 0);
++*/
 +}
 +
 +/*
@@ -243,7 +266,8 @@
 +	else 
 +		tsk->sched_class->dequeue_task(cpu_rq(*cpu), tsk, 0);
 +*/	set_task_rq(tsk, *cpu); 
-+	irmos_sched_class.enqueue_task(cpu_rq(*cpu), tsk, 0);
++	//irmos_sched_class.enqueue_task(cpu_rq(*cpu), tsk, 0);
++	enqueue_task(cpu_rq(*cpu), tsk, 0);
 +}
 +
 +/*
@@ -267,7 +291,7 @@
 +		/* dequeue tasks inside this cgroup  */
 +		scan.cg = tg->css.cgroup;
 +		scan.test_task = NULL;
-+		scan.process_task = before_redirect_rq;
++		scan.process_task = before_redirect_rq_top;
 +		scan.heap = NULL;
 +		scan.data = &i;
 +
@@ -308,15 +332,11 @@
 + 	for_each_possible_cpu(i) {
 +
 +#ifdef CONFIG_FAIR_GROUP_SCHED
-+               /* hir->irmos_rq[i]->rq_.cfs.tg = tg;
-+                hir->irmos_rq[i]->rq_.cfs.rq = &hir->irmos_rq[i]->rq_;
-+                tg->cfs_rq[i] = &hir->irmos_rq[i]->rq_.cfs;
-+                tg->se[i] = NULL;
-+		*/
 +		init_tg_cfs_entry_irmos(tg, &hir->irmos_rq[i]->rq_.cfs,
 +						NULL, i, NULL,
 +						hir->irmos_rq[i]);
 +#endif
++
 +#ifdef CONFIG_RT_GROUP_SCHED
 +            /*    hir->irmos_rq[i]->rq_.rt.highest_prio.curr = MAX_RT_PRIO;
 +                hir->irmos_rq[i]->rq_.rt.rt_nr_boosted = 0;
@@ -330,6 +350,51 @@
 +						NULL, i, NULL,
 +						hir->irmos_rq[i]);
 +#endif
++
++		/*
++		 * Before re enqueue tasks in each decsendant cgroups
++		 * we first reset some time related parameters for a cfs task 
++		 * group.
++		 */
++#ifdef CONFIG_FAIR_GROUP_SCHED
++		parent = tg;
++la1:
++                list_for_each_entry_rcu(child, &parent->children, siblings) {
++
++			if( child->hir)			
++				continue;
++			//child->se[i]->on_rq                        = 0;
++
++			child->se[i]->on_rq                     = 0;
++			child->se[i]->exec_start                = 0;
++			child->se[i]->sum_exec_runtime          = 0;
++			child->se[i]->prev_sum_exec_runtime     = 0;
++			child->se[i]->nr_migrations             = 0;
++			child->se[i]->vruntime                  = 0;
++#if 0
++#ifdef CONFIG_SCHEDSTATS
++			memset(&child->se[i]->statistics, 0, 
++					sizeof(child->se[i]->statistics));
++#endif
++#endif
++			init_cfs_rq(child->cfs_rq[i]);
++                        parent = child;
++                        goto la1;
++la2:
++                        continue;
++                }
++
++                if( parent == tg)
++                        goto la3;
++
++                child = parent;
++                parent = parent->parent;
++                goto la2;
++la3:
++		//continue;
++#endif
++//	}
++
 +		/* redirect tasks', belonging to  this cgroup, runqueue 
 +		 * and enqueue them in the new runqueues 
 +		 */
@@ -340,6 +405,9 @@
 +                scan.data = &i;
 +                cgroup_scan_tasks(&scan);
 +
++
++
++
 +		parent = tg;
 +re_q1:
 +                list_for_each_entry_rcu(child, &parent->children, siblings) {
@@ -347,6 +415,7 @@
 +			if( child->hir)			
 +				continue;
 +#ifdef CONFIG_FAIR_GROUP_SCHED
++			//init_cfs_rq(child->cfs_rq[i]);
 +                        init_tg_cfs_entry_irmos(child, child->cfs_rq[i],
 +                                        child->se[i], i, child->parent->se[i],
 +                                        hir->irmos_rq[i]);
@@ -1332,6 +1401,7 @@
 +	update_curr_irmos(rq);
 +	
 +	update_rq_clock(&irmos_rq->rq_);
++	update_cpu_load_active(&irmos_rq->rq_);
 +	p->sched_class->task_tick(&irmos_rq->rq_, p, queued);
 +}
 +
